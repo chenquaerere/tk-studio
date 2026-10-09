@@ -205,7 +205,27 @@ common (paths / config / version / errors)
 | **W12** | **全局美化 + 两处 bug 修复（第七轮）**：① 每日归档「复制」拿不到全部链接（根因：归档页没走 `alwaysReload`，只在首次进入时加载，正文一直是旧快照）→ 每次进入重拉列表与正文 + 复制走服务端完整文本 + 「共 N 条链接」计数 + 文本区给足高度；② 采集任务账号列表的**地区标签压住 @账号**（标签与昵称同格，实测间距 0~1px）→ 标签移出 `.acct-name` 独立成列 + 时间列右对齐；③ **全站美化**：字体层级对齐原程序 9 级、按钮三档语义与统一高度、设置页表单对齐成列、表格/指标卡规整、toast 改浮动胶囊、弹窗统一三档尺寸；④ **按钮体系重做**：彩色 emoji 图标 → 单色矢量图标（`data-ico` + CSS `mask` 跟随文字色，51 个）、同一操作全站同色、危险操作退出页头首位、按语义分组（`.btn-sep`）、禁用态可辨识 | ✅ 已完成 |
 | **W12.1** | **修复：采集任务「地区」下拉在部分进入顺序下只剩「全部地区」**（第八轮，v1.4.1）：根因 —— `loadCollect()` 把「地区下拉 / 采集日期 / 账号间隔 / 时区」整块写在 `if (!S_.meta)` 里，而 `S_.meta` 是跨页共享缓存、侧栏「账号管理」又排在「采集任务」前面 ⇒ 先去过账号管理再进来时整块被跳过。**该缺陷自 v1.0.0 潜伏至今**（已用 v1.0.0 打包副本比对确认，非回归），且**只在特定进入顺序下出现**。修：取共享缓存与控件初始化解耦 + 下拉改自愈式守卫（`options.length <= 1`）+ 可编辑输入框用页面自己的 `collectInited` 标志 + `!value` 双守卫。**同时修掉**采集页参数工具栏在默认宽度下折行、「停止」落单（收窄间距/输入框 + 四个动作按钮包成 `.toolbar-actions` 一整组）。新增 `verify_w7 [3h]` **7 项** + `[3g]` **4 项**回归断言（刻意按该顺序进入） | ✅ 已完成 |
 
-| **W13** | **文档体系与仓库化（第九轮，v1.4.1）**：① 新增 **`INSTALL.md`** —— 面向访客的完整分步安装文档（环境要求 / torch 必须先于依赖安装的原因 / 模型权重下载清单与来源 / ffmpeg 准备 / 浏览器内核 / 自检与排错）；② 新增 **`requirements.txt`**（此前**根本不存在**，而 README 一直引用它 —— 从 venv 反推并逐包核实引用，剔除 `pandas` / `pystray` / `httpx` 三个从未被引用的遗留包，补上 Windows 必需的 `tzdata`）；③ 新增 **`.gitignore`**（排除用户数据 / 环境 / 内核 / 模型 / ffmpeg，合计约 6.9 GB）与 **`config.example.json`**（键集与 `config.DEFAULTS` 逐一对齐）；④ 修复版本一致性：启动器工程 `_launcher.csproj` 版本号 `1.0.0` → `1.4.1` 并重编译、`verify_release.py` 的**硬编码版本号与 13 项写死视图清单改为动态推导**（此前 `dashboard` / `history` / `logs` 三个视图从未被校验）；⑤ 隐私脱敏：文档中真实账号名统一匿名化、界面截图不入库 | ✅ 已完成 |
+| **W13** | **文档体系与仓库化（第九轮，v1.4.1）**：① 新增 **`INSTALL.md`** —— 面向访客的完整分步安装文档（环境要求 / torch 必须先于依赖安装的原因 / 模型权重下载清单与来源 / ffmpeg 准备 / 浏览器内核 / 自检与排错）；② 新增 **`requirements.txt`**（此前**根本不存在**，而 README 一直引用它 —— 从 venv 反推并逐包核实引用，剔除 `pandas` / `pystray` / `httpx` 三个从未被引用的遗留包，补上 Windows 必需的 `tzdata`）；③ 新增 **`.gitignore`**（排除用户数据 / 环境 / 内核 / 模型 / ffmpeg，合计约 6.9 GB）与 **`config.example.json`**（键集与 `config.DEFAULTS` 逐一对齐）；④ 修复版本一致性：启动器工程 `_launcher.csproj` 版本号 `1.0.0` → `1.4.1` 并重编译、`verify_release.py` 的**硬编码版本号与 13 项写死视图清单改为动态推导**（此前 `dashboard` / `history` / `logs` 三个视图从未被校验）；⑤ 隐私脱敏：文档中真实账号名统一匿名化、界面截图不入库；⑥ **发布到 GitHub 公开仓库 `chenquaerere/tk-studio`**（162 文件 / 2.07 MB） | ✅ 已完成 |
+
+| **W13.1** | **安装路径写实 + 模型一键下载（第十轮，v1.4.2）**：用户反馈「方式二都没有东西，还有模型安装方式」。① 根因 —— README 的「便携完整版（解压即用）」读起来像有现成 6.9 GB 包可下，实际**不在仓库**（超 GitHub 单文件上限），且仓库根那个 109 KB 的 `TK素材工坊.exe` **只是托盘启动器**，单独下载无用（需要同目录已装好的运行环境）；② 新增 **`scripts/fetch_models.py`** 模型权重下载器，**复用程序自身的下载注册表**（`_app/watermark/core/engines/models.py`）而非另抄一份地址，支持 `--list` / `--min` / 默认（已接入 5 个）/ `--all` / `--face` / `--key` / `--proxy`，已就位跳过、失败重试、`.part` 断点，只写 `models\` 与 `gfpgan\weights\`；③ 讲清此前没说透的事实 —— **程序首次用到模型时本来就会自动下载**（`engines/image.py` 里超分与人脸修复两处都有 `download_model` 兜底），故模型这步可整段跳过；④ INSTALL 开头改为「先选一条路」（A 装源码 / B 做成便携版 / C 只补模型），README 快速开始改为路线 A/B/C + 新增「模型权重怎么装」三档一节。**界面、按钮、功能、数据格式零改动** | ✅ 已完成 |
+
+### W13.1 验收证据（2026-10-09 · v1.4.2 · 安装文档写实 + 模型下载器）
+
+**用户诉求**：「方式二都没有东西，还有模型安装方式」
+
+| 项 | 内容 |
+|---|---|
+| 「方式二没有东西」的真实原因 | ① 完整版压缩包 6.9 GB **不在仓库**（GitHub 单文件上限 2 GB），README 原文写法让人以为可直接下载；② 仓库根 `TK素材工坊.exe` 仅 109 KB，是托盘启动器，会自己去找 `venv\Scripts\python.exe`（`_launcher.cs:351`）→ 单独下载它**必然无反应** |
+| 澄清的第三条路 | 读 `scripts/_launcher.cs` 确认它的查找顺序为 `venv\Scripts\python.exe` → `python-runtime\` → PATH `python.exe` ⇒ **源码装好后双击该 exe 是能用的**，已在文档中写明 |
+| 新增脚本 | `scripts/fetch_models.py`。**关键设计：不另抄下载地址**，直接 `import` 程序自身的 `watermark.core.engines.models` 取 `MODELS` 注册表与 `download_model()` ⇒ 脚本与程序内自动下载**永远同源**，不会出现"脚本下的和程序要的不是同一个文件" |
+| 脚本参数 | `--list`（清单与状态）/ `--min`（默认模型 1 个，约 5 MB）/ 默认（`ready_keys()` 5 个，约 484 MB）/ `--all`（9 个 auto）/ `--face`（facexlib 人脸检测+解析权重，约 186 MB）/ `--key`（可重复）/ `--proxy` |
+| 脚本实测（离线） | 用 `file://` 假源跑通全链路：流式下载 → `.part` → 完整性/体积校验 → `rename` 落盘 → 重复调用跳过；`FACE_WEIGHTS` 分支同样跑通 → 临时目录已清理 |
+| 脚本实测（真实清单） | `--list` 列出 5 个已接入模型（已就位 5/5）；默认 / `--min` / `--all --face` 三个分支输出正常 |
+| 权重地址核实 | facexlib `detection_Resnet50_Final.pth` 实测 HTTP **200、109,497,761 字节**，与本机既有文件大小**逐字节一致** ✅（其余地址取自程序自身注册表；沙箱代理对部分大文件源返回 502，无法逐条复验） |
+| 模型中心仍无下载按钮 | 复查原版 v4.0.0 的 `frontend/` 与 `ui/`，**均无模型下载入口**（下载只由引擎在缺模型时内部触发）⇒ 合并版**未漏控件**，本次也不新增界面按钮 |
+| 文档改动 | README：快速开始重写为路线 A（源码）/ B（自行打包便携版）/ C（只补模型）+ 新增「二、模型权重怎么装」三档（程序自动 / 脚本预下 / 手动），后续章节号顺延为三~八；INSTALL：开头改「先选一条路」并点名 exe 只是启动器、第 7 步重写为三档、脚本表与「自带 vs 需自备」表同步 |
+| 版本一致性 | `APP_VERSION` → `1.4.2`；`changelog.py` 顶部新增 v1.4.2（17 个版本 / 468 行）；`_launcher.csproj` → `1.4.2` 并重编译（**0 警告 0 错误**，`verify_icon` 8/8 帧同源，exe 内 `1.4.2.0` ✅ / `1.4.1.0` 已无） |
+| 验收结果 | `smoke_test` **23/23**（含「changelog 顶部版本 == APP_VERSION」断言）· `verify_release` **9/9** · `verify_icon` 8/8 帧 · `verify_w7` / `verify_w4` / `audit_ui_parity` 同 W13（界面零改动） |
 
 ### W13 验收证据（2026-10-09 · v1.4.1 · 文档与仓库化）
 
@@ -213,8 +233,8 @@ common (paths / config / version / errors)
 
 | 项 | 内容 |
 |---|---|
-| 仓库 | `chenquaerere/TK素材工坊`（公开），只收录源码与文档 |
-| 发布范围 | `_app/` `scripts/` `docs/` `assets/` `desktop.py` `requirements.txt` `config.example.json` `.gitignore` 等，约 2.9 MB |
+| 仓库 | `chenquaerere/tk-studio`（公开，原名拟用「TK素材工坊」但 GitHub 不支持非 ASCII 仓库名 —— 建仓返回 201 却把中文静默替换成 `-`，已用 `PATCH /repos/{o}/{r}` 重命名） |
+| 发布范围 | `_app/` `scripts/` `docs/` `assets/` `desktop.py` `requirements.txt` `config.example.json` `.gitignore` 等，**162 文件 / 2.07 MB** |
 | 排除范围 | `venv/` 5.0G · `data/` 1.3G（**用户数据**）· `models/` 1.2G · `runtime/` 583M · `tools/` 296M · `gfpgan/` 186M · `python-runtime/` 94M · `docs/screenshots/` 4.1M（**含真实账号名单**） |
 | 依赖核实方法 | 不用「pip list 抄一遍」，而是逐包反查 `_app/` `scripts/` `desktop.py` 的真实 import 处数 ⇒ 发现 `pandas` / `pystray` / `httpx` **0 处引用**（托盘实际由 C# 启动器提供，不是 Python），`tzdata` 虽 0 处直接 import 但 Windows 上 `zoneinfo` 必需 |
 | 安装顺序结论 | `basicsr` / `gfpgan` / `realesrgan` 均声明 `torch>=1.7` ⇒ **必须先装 torch 再装 requirements.txt**，否则 pip 会先拉一个 CPU 版 torch（白下 3 GB）。已写进 INSTALL.md 并注明原因 |

@@ -9,13 +9,16 @@
 
 ## 〇、先选一条路
 
-| 方案 | 适合谁 | 需要准备 | 体积 |
+| 路线 | 适合谁 | 需要准备 | 最终体积 |
 |---|---|---|---|
-| **A. 从源码安装**（本仓库） | 想自己跑起来、想改代码 | Python 3.10 + 约 10 GB 磁盘 | 约 10 GB |
-| **B. 便携完整版**（自带一切） | 拿到就能用、不装环境 | 无 —— 解压即用 | 约 6.9 GB |
+| **A. 从源码装**（本仓库，本文正文） | 想自己跑起来、想改代码 | Python 3.10 | 约 10 GB |
+| **B. 做成便携完整版** | 想拷给别人 / 换电脑不装环境 | **先做完 A**，再打包 | 约 6.9 GB |
 
-方案 B 的完整版压缩包**不在本仓库**（远超 GitHub 单文件与仓库容量限制）。
-想要完整版可以自己按 `scripts\package.py` 打一个包 —— 它会自动排除用户数据。
+> ⚠️ **没有"下载即用"的完整版**。完整版压缩包约 6.9 GB，**不在本仓库**
+> （GitHub 单文件上限 2 GB），只能按路线 A 把环境装出来之后，
+> 用 `venv\Scripts\python.exe scripts\package.py` 自己打出来。
+> 仓库根目录那个 `TK素材工坊.exe`（109 KB）**只是托盘启动器**，
+> 单独下载它没有任何用 —— 它需要同目录下已经装好的 `venv\`。
 
 **只想用某一部分？** 不必装全套，见 [第四节 · 按需安装](#四按需安装只想用某一部分)。
 
@@ -146,11 +149,46 @@ venv\Scripts\python.exe -m playwright install chromium
 > 先设 `set PLAYWRIGHT_BROWSERS_PATH=%CD%\runtime\ms-playwright` 再执行上面的命令。
 > 程序启动时若发现 `runtime\ms-playwright` 存在且非空，就会优先使用它。
 
-### 第 7 步 · 下载模型权重（高清修复功能需要）
+### 第 7 步 · 模型权重（高清修复功能需要）
 
-**只做去水印 → 跳过本步**（去水印不需要任何模型）。
+**只做链接采集 / 去水印 → 跳过本步**（这两块不需要任何模型）。
 
-模型放在 `models\` 目录（需自己新建）。**最小可用**只要一个文件：
+模型放在 `models\`，人脸修复的辅助权重放在 `gfpgan\weights\`（两个目录程序都会自动创建）。
+三种方式任选，**方式 1 最省事**。
+
+#### 方式 1 · 什么都不做 —— 程序会自己下载 ★
+
+程序在**第一次用到某个模型时**自动把它下下来（多源回退、每个源重试 2 次、`.part` 断点重来），
+界面上能看到进度。触发点例如：在「高清修复」页选了一个还没下过的模型，
+或勾上了「人脸修复」。所以**本步可以整段跳过**。
+
+#### 方式 2 · 用脚本提前下好（慢网 / 离线 / 打包便携版前推荐）
+
+```bat
+:: 先看清单与当前状态（不下载）
+venv\Scripts\python.exe scripts\fetch_models.py --list
+
+:: 最小可用：默认模型 1 个，约 5 MB
+venv\Scripts\python.exe scripts\fetch_models.py --min
+
+:: 全部「已接入」模型：5 个，约 484 MB
+venv\Scripts\python.exe scripts\fetch_models.py
+
+:: 连可选模型一起（9 个），并备好人脸修复辅助权重（+ 约 186 MB）
+venv\Scripts\python.exe scripts\fetch_models.py --all --face
+
+:: 只下某一个 / 走代理下载
+venv\Scripts\python.exe scripts\fetch_models.py --key GFPGANv1.4
+venv\Scripts\python.exe scripts\fetch_models.py --proxy http://127.0.0.1:11304
+```
+
+脚本用的是**程序自身那份下载注册表**（`_app\watermark\core\engines\models.py`），
+与程序内自动下载同源。已就位的会跳过，失败的会重试 —— 中断后重跑同一命令即可续上。
+只写 `models\` 与 `gfpgan\weights\`，不碰任何用户数据。
+
+#### 方式 3 · 手动下载
+
+**最小可用**只要一个文件：
 
 | 放入 `models\` | 体积 | 说明 |
 |---|---|---|
@@ -180,15 +218,10 @@ venv\Scripts\python.exe -m playwright install chromium
 | `detection_Resnet50_Final.pth` | 104.4 MB | 人脸检测 —— 来自 [facexlib v0.1.0](https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth) |
 | `parsing_parsenet.pth` | 81.4 MB | 人脸解析 —— 来自 [facexlib v0.2.2](https://github.com/xinntao/facexlib/releases/download/v0.2.2/parsing_parsenet.pth) |
 
-> 不想手动下载？程序内置了模型下载接口（带多镜像回退），可让程序自己取。
-> 先把程序跑起来（第 10 步），再执行：
->
-> ```bat
-> :: 下载全部缺失的模型（端口见 runtime\server.json）
-> curl -X POST http://127.0.0.1:7860/api/models/download ^
->      -H "Content-Type: application/json" -d "{\"key\":null}"
-> ```
->
+> 程序内的「模型中心 → 模型库」可以看到每个模型的**接入状态、体积与显存占用**，
+> 但它只做展示，**没有下载按钮**（与合并前的原程序一致）——
+> 下载走方式 1（自动）或方式 2（脚本）。
+> 服务接口也可直接调用：`POST /api/models/download`，body `{"key": null}` 下载全部缺失项，
 > 单个模型把 `null` 换成模型 key（如 `"realesr-general-x4v3"`）。
 
 ### 第 8 步 · 准备 ffmpeg（视频处理需要）
@@ -259,6 +292,7 @@ venv\Scripts\python.exe scripts\smoke_test.py
 
 | 命令 | 检查内容 |
 |---|---|
+| `scripts\fetch_models.py` | 模型权重下载（`--list` / `--min` / `--all` / `--face` / `--proxy`） |
 | `scripts\smoke_test.py` | 启动冒烟（23 项） |
 | `scripts\verify_bundled_browser.py` | 随身浏览器内核（4 项，含「模拟干净机器」） |
 | `scripts\verify_release.py` | 发布目录完整性（9 项） |
@@ -324,8 +358,8 @@ copy scripts\launcher\bin\Release\TK素材工坊.exe "TK素材工坊.exe"
 | `_app\` `scripts\` `docs\` `assets\` `desktop.py` | ✅ 仓库自带 | 全部源码 |
 | `venv\` | ❌ 自己建 | 第 3~5 步 |
 | `runtime\ms-playwright\` | ❌ 自己装 | 第 6 步（默认也可装到系统目录） |
-| `models\` | ❌ 自己下 | 第 7 步 |
-| `gfpgan\weights\` | ❌ 自己下 | 第 7 步（仅人脸修复需要） |
+| `models\` | ❌ 自己下 | 第 7 步（**也可以不管** —— 程序首次用到时会自动下载） |
+| `gfpgan\weights\` | ❌ 自己下 | 第 7 步（仅人脸修复需要，同样会自动下载） |
 | `tools\ffmpeg\bin\` | ❌ 自己下 | 第 8 步 |
 | `python-runtime\` | ❌ 自己建 | 仅完整版自带的内置 Python |
 | `config.json` | ⚙️ 自动生成 | 第 9 步（可选模板） |

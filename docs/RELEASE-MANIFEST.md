@@ -1,4 +1,4 @@
-# 发布清单 · TK 素材工坊 v1.4.1
+# 发布清单 · TK 素材工坊 v1.4.2
 
 > 由 `scripts/verify_release.py --write` 生成。
 > 对比两次发布的 md5，可快速定位哪些文件发生了变化。
@@ -7,15 +7,15 @@
 
 | 文件 | 大小 (B) | md5 |
 |---|---:|---|
-| `TK素材工坊.exe` | 111,616 | `f69be0e2bd0e844285384a7ffbff08da` |
+| `TK素材工坊.exe` | 111,616 | `14c13a325119a11f1112140321ffa040` |
 | `desktop.py` | 20,365 | `fff3f3dfe65b3d9d4c9161a966fd036d` |
 | `config.json` | 2,264 | `b4dc94a98a82e6908e36ffd7c1398a92` |
-| `README.md` | 18,044 | `62ab72199402c05c56996993764f0eb2` |
-| `CHANGELOG.md` | 53,335 | `6b3e3970a693b5b6004643203325454a` |
+| `README.md` | 22,421 | `3107ecc614fbc0a01f341131bf6c564e` |
+| `CHANGELOG.md` | 56,157 | `0e97cf11ebd494214ecf5a53f0d8a600` |
 | `assets/icon.ico` | 96,627 | `cde614e02aa02d84a5e5e3d1bfd8f5be` |
 | `_app/__init__.py` | 45 | `46267a3400c11c197a90c8b55b5ca82e` |
 | `_app/common/paths.py` | 2,829 | `80779946250bb85c7d5afa44e27722a0` |
-| `_app/common/version.py` | 785 | `612bde6bad98dc2e37d6d0c644d5b599` |
+| `_app/common/version.py` | 785 | `e1d6e445f1519c5864a24278964c6cc1` |
 | `_app/common/config.py` | 9,766 | `ca5cb8e169d116cf2d7b396d99a5109a` |
 | `_app/common/logging_setup.py` | 2,616 | `5a39e5d3ee36ef87a6ebed3e76b8a7e9` |
 | `_app/common/errors.py` | 2,256 | `6030eedbf4977e6c45966b143cd25975` |

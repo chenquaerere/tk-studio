@@ -9,7 +9,7 @@ from __future__ import annotations
 
 APP_NAME = "TK 素材工坊"
 APP_NAME_EN = "TK Studio"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 BUILD_DATE = "2026-10-09"
 
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
