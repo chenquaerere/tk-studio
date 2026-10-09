@@ -1,0 +1,1151 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TK 素材工坊</title>
+  <link rel="icon" href="/static/assets/icon.ico" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <span class="brand-name">TK 素材工坊</span>
+        <span class="brand-sub" id="brand-sub">采集 · 去水印 · 高清</span>
+        <span class="brand-ver" id="ver">v—</span>
+      </div>
+      <div class="topbar-right">
+        <span class="pill" id="env-pill">引擎检测中…</span>
+        <span class="pill pill-dot" id="svc-pill">服务连接中…</span>
+      </div>
+    </header>
+
+    <div class="body">
+      <nav class="sidebar">
+        <!-- ============ 分组零：总览 ============ -->
+        <div class="nav-group">总览</div>
+        <button class="nav-item active" data-page="dashboard">
+          <span class="nav-ico">📊</span> 仪表盘
+        </button>
+
+        <!-- ============ 分组一：采集工作流 ============ -->
+        <!-- 顺序按工作流实际推进：先备好账号 → 需要时采聊天链接 →
+             再跑作品采集 → 看结果 → 查当日归档。 -->
+        <div class="nav-group">采集工作流</div>
+        <button class="nav-item" data-page="accounts">
+          <span class="nav-ico">👤</span> 账号管理
+        </button>
+        <button class="nav-item" data-page="chat">
+          <span class="nav-ico">💬</span> 聊天链接采集
+        </button>
+        <button class="nav-item" data-page="collect">
+          <span class="nav-ico">📥</span> 采集任务
+        </button>
+        <button class="nav-item" data-page="results">
+          <span class="nav-ico">🔗</span> 采集结果
+        </button>
+        <button class="nav-item" data-page="daily">
+          <span class="nav-ico">📅</span> 每日归档
+        </button>
+        <button class="nav-item" data-page="history">
+          <span class="nav-ico">🗂</span> 历史记录
+        </button>
+
+        <!-- ============ 分组二：素材制作 ============ -->
+        <div class="nav-group">素材制作</div>
+        <button class="nav-item" data-page="tiktok">
+          <span class="nav-ico">🎬</span> 去水印
+        </button>
+        <button class="nav-item" data-page="hd">
+          <span class="nav-ico">✨</span> 高清修复
+        </button>
+        <button class="nav-item" data-page="library">
+          <span class="nav-ico">📚</span> 素材库
+        </button>
+        <button class="nav-item" data-page="models">
+          <span class="nav-ico">🧩</span> 模型中心
+        </button>
+
+        <!-- ============ 分组三：系统 ============ -->
+        <div class="nav-group">系统</div>
+        <button class="nav-item" data-page="jobs">
+          <span class="nav-ico">📋</span> 任务中心 <span class="nav-badge" id="jobs-badge">0</span>
+        </button>
+        <button class="nav-item" data-page="tools">
+          <span class="nav-ico">🛠</span> 工具箱
+        </button>
+        <button class="nav-item" data-page="logs">
+          <span class="nav-ico">📜</span> 运行日志
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="nav-ico">⚙️</span> 设置
+        </button>
+        <button class="nav-item" data-page="about">
+          <span class="nav-ico">ℹ️</span> 关于
+        </button>
+      </nav>
+
+      <main class="content">
+
+        <!-- ==================================================================
+             总览 · 仪表盘
+             ================================================================== -->
+        <section class="page" id="page-dashboard">
+          <div class="page-head">
+            <h1 class="page-title">仪表盘</h1>
+            <p class="page-sub">
+              账号作品链接采集概览
+              <span class="muted" id="db-date"></span>
+            </p>
+          </div>
+
+          <div class="stat-row">
+            <div class="stat primary">
+              <div class="stat-value" id="db-a-total">—</div>
+              <div class="stat-label">账号总数</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value" id="db-a-enabled">—</div>
+              <div class="stat-label">已启用</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value" id="db-a-disabled">—</div>
+              <div class="stat-label">已停用</div>
+            </div>
+            <div class="stat accent">
+              <div class="stat-value" id="db-v-total">—</div>
+              <div class="stat-label">累计作品链接</div>
+            </div>
+            <div class="stat accent">
+              <div class="stat-value" id="db-v-today">—</div>
+              <div class="stat-label">今日新增作品</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value" id="db-t-total">—</div>
+              <div class="stat-label">历史任务</div>
+            </div>
+            <div class="stat">
+              <div class="stat-value" id="db-chat">—</div>
+              <div class="stat-label">聊天目标</div>
+            </div>
+          </div>
+
+          <div class="tk-notice warn notice-flex" id="db-unfinished" style="display:none">
+            <span id="db-unfinished-text"></span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn btn-primary btn-sm" id="db-go-collect">前往采集任务</button>
+          </div>
+
+          <div class="tk-notice notice-flex" id="db-guide" style="display:none">
+            <div>
+              <strong>欢迎使用 TikTok 作品链接采集器</strong>
+              <div class="muted" style="margin-top:6px">
+                三步即可批量拿到你所有账号的作品链接：<br />
+                ① 到「账号管理」粘贴账号链接（一行一个，也支持 CSV / Excel 导入）→
+                ② 需要采好友 / 群聊分享链接时，去「聊天链接采集」先登录一次 →
+                ③ 到「采集任务」选中账号开始采集。
+              </div>
+            </div>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn btn-primary btn-sm" id="db-go-accounts">前往账号管理</button>
+          </div>
+
+          <div class="card">
+            <div class="card-title">最近任务 <span class="muted" id="db-task-note"></span>
+              <button class="btn btn-ghost btn-sm btn-push" id="db-refresh" data-ico="refresh">刷新</button>
+            </div>
+            <div class="table-wrap" id="db-tasks"></div>
+          </div>
+
+          <div class="card" id="db-detail" style="display:none">
+            <div class="card-title">任务详情 <span class="mono muted" id="db-detail-id"></span>
+              <button class="btn btn-ghost btn-sm btn-push" id="db-detail-close" data-ico="close">关闭</button>
+            </div>
+            <div class="kv" id="db-detail-kv"></div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn btn-ghost btn-sm" id="db-detail-copy" data-ico="copy">复制全部链接</button>
+              <button class="btn btn-ghost btn-sm" id="db-detail-export" data-ico="export">导出 TXT</button>
+            </div>
+            <div class="table-wrap" id="db-detail-accts" style="margin-top:10px"></div>
+            <pre class="url-box" id="db-detail-links" style="margin-top:10px"></pre>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 1/5 采集任务
+             ================================================================== -->
+        <section class="page hidden" id="page-collect">
+          <div class="page-head">
+            <h1 class="page-title">采集任务 <span class="tag tag-idle" id="col-tz">时区 —</span></h1>
+            <p class="page-sub">选择账号 → 设置数量 → 开始串行采集</p>
+          </div>
+
+          <div class="tk-notice warn" id="col-warn-replace" style="display:none">
+            ⚠ 采集采用<strong>替换式记录</strong>：开始后会先清除所选账号的既有作品记录，再写入新结果。
+          </div>
+
+          <div class="toolbar">
+            <label class="field">记录日期
+              <input type="text" id="col-date" placeholder="YYYY-MM-DD" style="width:110px;min-width:110px" />
+            </label>
+            <button class="btn btn-ghost btn-sm" id="col-today">今天</button>
+            <button class="btn btn-ghost btn-sm" id="col-yesterday">昨天</button>
+            <span class="sep"></span>
+            <label class="field">每账号最新条数
+              <input type="number" id="col-count" min="1" max="50" value="4" style="width:66px;min-width:66px" />
+            </label>
+            <button class="btn btn-ghost btn-sm" id="col-apply-count">应用到已选</button>
+            <label class="field">账号间隔(秒)
+              <input type="number" id="col-interval" min="0" max="120" step="0.5" style="width:66px;min-width:66px" />
+            </label>
+            <span class="spacer"></span>
+            <span class="muted" id="col-picked">已选 0/0</span>
+            <!-- 原桌面版把「开始 / 暂停 / 继续 / 停止」放在同一排常驻，
+                 而不是等任务跑起来才出现 —— 否则用户在采集前根本看不到暂停键。
+                 主操作（开始采集）与流程控制（暂停/继续/停止）之间用竖线隔开：
+                 两组语义不同，混成一排就看不出哪个是"按下就走"。 -->
+            <span class="btn-sep"></span>
+            <!-- 四个动作按钮包成一组：窗口变窄时**整体**折到下一行，
+                 而不是把「停止」单独甩出去落单（原桌面版这四个也是同一排）。 -->
+            <div class="toolbar-actions">
+              <button class="btn btn-primary" id="col-start" data-ico="play" disabled>开始采集</button>
+              <button class="btn btn-warn" id="col-pause" data-ico="pause" disabled>暂停</button>
+              <button class="btn btn-accent" id="col-resume" data-ico="play" disabled>继续</button>
+              <button class="btn btn-danger" id="col-cancel" data-ico="stop" disabled>停止</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <label class="field">地区
+              <select id="col-region"><option value="">全部地区</option></select>
+            </label>
+            <div class="search">
+              <input type="search" id="col-search" placeholder="搜索昵称 / 账号" />
+            </div>
+            <button class="btn btn-ghost btn-sm" id="col-sel-all">全选</button>
+            <button class="btn btn-ghost btn-sm" id="col-sel-none">全不选</button>
+            <button class="btn btn-ghost btn-sm" id="col-invert">反选</button>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost btn-sm" id="col-resume-unfinished" data-ico="reset">恢复未完成</button>
+          </div>
+
+          <div class="tk-notice warn" id="col-retry-bar" style="display:none">
+            <span id="col-retry-msg"></span>
+            <button class="btn btn-ghost btn-sm" id="col-retry" data-ico="refresh">重试失败账号</button>
+          </div>
+
+          <div class="card tight">
+            <div class="card-title">账号列表 <span class="muted" id="col-acct-count"></span></div>
+            <div class="acct-list" id="col-accts">
+              <div class="empty"><div class="spinner"></div><div class="empty-desc">加载账号…</div></div>
+            </div>
+          </div>
+
+          <div class="card" id="col-run-card" style="display:none">
+            <div class="card-title">采集进度 <span class="muted" id="col-run-state"></span></div>
+            <div class="progress"><div class="progress-bar" id="col-bar"></div></div>
+            <pre class="log tall" id="col-log">等待开始…</pre>
+            <p class="muted" style="margin-top:10px">
+              暂停按<strong>账号边界</strong>生效：当前账号采完即停，已采数据全部保留。
+              「继续」只补采尚未完成的账号。
+            </p>
+          </div>
+
+          <div class="card" id="col-acc-card" style="display:none">
+            <div class="card-title">本次结果 <span class="muted" id="col-summary"></span></div>
+            <div class="table-wrap" id="col-acc-table"></div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 2/5 账号管理
+             ================================================================== -->
+        <section class="page hidden" id="page-accounts">
+          <div class="page-head">
+            <h1 class="page-title">账号管理</h1>
+            <p class="page-sub">管理你的 TikTok 账号池，支持按地区分类</p>
+          </div>
+
+          <div class="toolbar">
+            <label class="field">地区
+              <select id="ac-region"><option value="">全部地区</option></select>
+            </label>
+            <label class="field">状态
+              <select id="ac-enabled">
+                <option value="">全部状态</option>
+                <option value="1">仅启用</option>
+                <option value="0">仅禁用</option>
+              </select>
+            </label>
+            <div class="search">
+              <input type="search" id="ac-search" placeholder="搜索账号 / 备注…" />
+            </div>
+            <span class="spacer"></span>
+            <span class="muted" id="ac-stat"></span>
+            <button class="btn btn-primary" id="ac-add" data-ico="plus">新增 / 批量导入</button>
+          </div>
+
+          <div class="toolbar">
+            <div class="search grow">
+              <input type="search" id="ac-quick" placeholder="输入主页链接或 @用户名，回车添加" />
+            </div>
+            <label class="field">地区
+              <select id="ac-quick-region"><option value="">未分类</option></select>
+            </label>
+            <button class="btn btn-primary" id="ac-quick-add">添加</button>
+          </div>
+
+          <div class="toolbar">
+            <span class="muted" id="ac-picked">已选 0 项</span>
+            <button class="btn btn-ghost btn-sm" id="ac-sel-all">全选</button>
+            <button class="btn btn-ghost btn-sm" id="ac-sel-none">全不选</button>
+            <button class="btn btn-ghost btn-sm" id="ac-invert">反选</button>
+            <span class="spacer"></span>
+            <!-- 批量操作分三组，用竖线隔开：勾选 / 账号属性 / 危险操作。
+                 改版前这 6 个按钮灰压压挤成一条，「删除」和「刷新昵称」长得一样，
+                 误点代价却完全不同。 -->
+            <button class="btn btn-ghost" id="ac-set-region" data-ico="tag" disabled>设置地区</button>
+            <button class="btn btn-ghost" id="ac-refresh-nick" data-ico="refresh">刷新昵称</button>
+            <span class="btn-sep"></span>
+            <button class="btn btn-ghost" id="ac-enable" data-ico="check" disabled>启用</button>
+            <button class="btn btn-ghost" id="ac-disable" data-ico="ban" disabled>停用</button>
+            <button class="btn btn-ghost" id="ac-edit-count" data-ico="edit" disabled>编辑数量</button>
+            <span class="btn-sep"></span>
+            <button class="btn btn-danger" id="ac-delete" data-ico="trash" disabled>删除</button>
+          </div>
+
+          <div class="tk-notice" id="ac-nick-tip" style="display:none"></div>
+
+          <div class="card tight">
+            <div class="table-wrap" id="ac-table">
+              <div class="empty"><div class="spinner"></div><div class="empty-desc">加载账号…</div></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 3/5 采集结果
+             ================================================================== -->
+        <section class="page hidden" id="page-results">
+          <div class="page-head head-flex">
+            <div>
+              <h1 class="page-title">采集结果</h1>
+              <p class="page-sub">查看、筛选、复制与导出已采集的作品链接</p>
+            </div>
+            <!-- 页头动作区：原桌面版四个动作一个不少，只把「清空链接」从最左挪到最右。
+                 它是**不可逆**操作，此前占据页头第一个位置、又顶着最扎眼的实心红 ——
+                 现在用竖线和前面的动作隔开，误触概率明显下降（文案与功能一字未改）。 -->
+            <div class="head-actions">
+              <button class="btn btn-accent" id="rs-copy-all" data-ico="copy">复制全部</button>
+              <button class="btn btn-ghost" id="rs-link-window" data-ico="window">链接窗口</button>
+              <div class="dropdown" id="rs-export">
+                <button class="btn btn-ghost" id="rs-export-btn" data-ico="chevron"
+                        aria-haspopup="true" aria-expanded="false">导出…</button>
+                <div class="menu hidden" id="rs-export-menu">
+                  <button data-fmt="txt" data-mode="urls">导出 TXT(纯URL)</button>
+                  <button data-fmt="txt" data-mode="grouped">导出 TXT(分组)</button>
+                  <button data-fmt="csv">导出 CSV</button>
+                  <button data-fmt="xlsx">导出 XLSX</button>
+                </div>
+              </div>
+              <span class="btn-sep"></span>
+              <button class="btn btn-danger" id="rs-clear" data-ico="trash">清空链接</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <label class="field">范围
+              <div class="seg" id="rs-scope">
+                <button data-scope="session" class="active">本次采集</button>
+                <button data-scope="all">全部历史</button>
+              </div>
+            </label>
+            <label class="field">发布日期
+              <input type="date" id="rs-date" title="留空 = 全部日期" />
+            </label>
+            <label class="field">账号
+              <select id="rs-account"><option value="">全部账号</option></select>
+            </label>
+            <label class="field">状态
+              <select id="rs-status"><option value="">全部状态</option></select>
+            </label>
+            <button class="btn btn-primary" id="rs-query" data-ico="search">查询</button>
+            <span class="spacer"></span>
+            <span class="muted" id="rs-count">共 0 条</span>
+            <span class="muted" id="rs-latest"></span>
+          </div>
+
+          <div class="stat-row" id="rs-stats" style="margin-bottom:14px"></div>
+
+          <div class="card tight" id="rs-card">
+            <div class="table-wrap" id="rs-table"></div>
+          </div>
+
+          <!-- 链接文本区：对标原桌面版 app/ui/link_window.py::LinkTextPanel ——
+               模式切换（纯链接 / 按账号分组）+ 复制选中 + 复制全部 + 共 N 条链接，
+               文本区用等宽字体、每条链接后跟空行，可直接用鼠标框选后 Ctrl+C。
+               **无条件可见**（铁律 17）：空结果时也能看见「复制」入口。 -->
+          <div class="card" id="rs-link-card">
+            <div class="card-title">
+              <div class="seg" id="rs-mode">
+                <button data-mode="urls" class="active">纯链接</button>
+                <button data-mode="grouped">按账号分组</button>
+              </div>
+              <button class="btn btn-ghost btn-sm" id="rs-copy-sel" data-ico="check">复制选中</button>
+              <button class="btn btn-ghost btn-sm" id="rs-copy" data-ico="copy">复制全部</button>
+              <span class="spacer" style="flex:1"></span>
+              <span class="muted" id="rs-url-count">共 0 条链接</span>
+            </div>
+            <pre class="url-box" id="rs-urls" tabindex="0">暂无数据</pre>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 4/5 每日归档
+             ================================================================== -->
+        <section class="page hidden" id="page-daily">
+          <div class="page-head">
+            <h1 class="page-title">每日归档</h1>
+            <p class="page-sub">每次采集都会把当日链接归档成 <span class="mono">links_log/YYYYMMDD.txt</span>。</p>
+          </div>
+
+          <div class="toolbar">
+            <button class="btn btn-ghost" id="dl-refresh" data-ico="refresh">刷新列表</button>
+            <span class="spacer"></span>
+            <span class="muted" id="dl-count"></span>
+          </div>
+
+          <div class="card tight">
+            <div class="daily-grid">
+              <div class="daily-list-col">
+                <div class="acct-list" id="dl-list">
+                  <div class="empty"><div class="empty-desc">暂无归档</div></div>
+                </div>
+              </div>
+              <div class="daily-main">
+                <div class="link-panel-head">
+                  <strong id="dl-title">选择一个日期</strong>
+                  <span class="muted" id="dl-link-count"></span>
+                  <span class="spacer" style="flex:1"></span>
+                  <button class="btn btn-ghost btn-sm" id="dl-copy-sel" data-ico="check">复制选中</button>
+                  <button class="btn btn-ghost btn-sm" id="dl-copy" data-ico="copy">复制全部</button>
+                  <button class="btn btn-ghost btn-sm" id="dl-download" data-ico="save">保存</button>
+                </div>
+                <pre class="url-box panel-box" id="dl-content" tabindex="0">—</pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 历史记录（任务级回溯）
+             ================================================================== -->
+        <section class="page hidden" id="page-history">
+          <div class="page-head">
+            <h1 class="page-title">历史记录</h1>
+            <p class="page-sub">
+              查看历次采集任务与明细 —— 每个任务采了哪些账号、各自多少条、采到了什么。
+              点任意一行展开详情并可直接复制 / 导出该任务的链接。
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <label class="field">状态
+              <select id="hi-status">
+                <option value="">全部状态</option>
+                <option value="completed">完成</option>
+                <option value="partial">当日作品不足</option>
+                <option value="empty">当日无作品</option>
+                <option value="failed">失败</option>
+                <option value="stopped">已停止</option>
+                <option value="running">采集中</option>
+                <option value="pending">等待中</option>
+              </select>
+            </label>
+            <label class="field grow">搜索
+              <input type="text" id="hi-query" placeholder="任务 ID / 记录日期 / 账号名" />
+            </label>
+            <label class="field">显示条数
+              <select id="hi-limit">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+            <span class="spacer"></span>
+            <span class="muted" id="hi-count"></span>
+            <button class="btn btn-ghost" id="hi-refresh" data-ico="refresh">刷新</button>
+          </div>
+
+          <div class="card">
+            <div class="table-wrap" id="hi-table"></div>
+          </div>
+
+          <div class="card" id="hi-detail" style="display:none">
+            <div class="card-title">任务详情 <span class="mono muted" id="hi-detail-id"></span>
+              <button class="btn btn-ghost btn-sm btn-push" id="hi-detail-close" data-ico="close">关闭</button>
+            </div>
+            <div class="kv" id="hi-detail-kv"></div>
+            <div class="row" style="margin-top:10px">
+              <button class="btn btn-ghost btn-sm" id="hi-detail-copy" data-ico="copy">复制全部链接</button>
+              <button class="btn btn-ghost btn-sm" id="hi-detail-export" data-ico="export">导出 TXT</button>
+              <span class="muted" id="hi-detail-note"></span>
+            </div>
+            <div class="table-wrap" id="hi-detail-accts" style="margin-top:10px"></div>
+            <pre class="url-box" id="hi-detail-links" style="margin-top:10px;max-height:320px"></pre>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             采集工作流 · 聊天链接采集
+             ================================================================== -->
+        <section class="page hidden" id="page-chat">
+          <div class="page-head">
+            <h1 class="page-title">聊天链接采集</h1>
+            <p class="page-sub">选账号 → 登录账号 → 加载会话列表 → 点选目标 → 采集最新 N 条视频链接</p>
+          </div>
+
+          <div class="chat-grid">
+            <!-- ---------- 左列：会话列表（主区） ---------- -->
+            <div class="card chat-col chat-left">
+              <div class="row">
+                <span class="muted nowrap">采集账号</span>
+                <select id="ch-account" style="min-width:190px;max-width:230px"></select>
+                <!-- 「登录账号」是这一步的主操作（没有会话就没法采集），
+                     改版前用的是 btn-warn 橙色警告底 —— 登录不是危险动作，
+                     一进页面就被最扎眼的橙色吸引反而是误导。「刷新会话列表」
+                     是它后面才用得上的次要动作，从主色降为描边。 -->
+                <button class="btn btn-primary" id="ch-login" data-ico="key">登录账号</button>
+                <button class="btn btn-ghost" id="ch-conv" data-ico="refresh">刷新会话列表</button>
+              </div>
+              <div class="chat-tip" id="ch-login-tip">首次使用请先点「登录账号」：弹出浏览器登录一次，之后免登录</div>
+
+              <div class="row" style="margin-top:10px">
+                <input type="text" id="ch-filter" class="grow"
+                       placeholder="输入关键词实时过滤（名称 / @用户名 / 消息摘要）" />
+                <div class="seg" id="ch-type-seg">
+                  <button type="button" class="active" data-type="">全部</button>
+                  <button type="button" data-type="friend">好友</button>
+                  <button type="button" data-type="group">群聊</button>
+                </div>
+              </div>
+
+              <div class="conv-list" id="ch-convs"></div>
+              <div class="chat-count" id="ch-conv-count">尚未加载，点右上角「刷新会话列表」</div>
+            </div>
+
+            <!-- ---------- 右列：操作区 ---------- -->
+            <div class="chat-col">
+              <div class="card chat-recent">
+                <span class="muted nowrap">最近使用</span>
+                <span class="capsules" id="ch-recent"></span>
+              </div>
+
+              <div class="card">
+                <div class="chat-selected" id="ch-target-label">未选择目标（在左侧列表点选）</div>
+                <div class="row">
+                  <span class="muted nowrap">采集数量</span>
+                  <input type="number" id="ch-count" min="1" max="200" value="22"
+                         style="width:64px;min-width:64px" />
+                  <button class="btn btn-primary" id="ch-start" data-ico="play" disabled>开始采集</button>
+                  <button class="btn btn-danger" id="ch-stop" data-ico="stop" disabled>停止</button>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="progress"><div class="progress-bar" id="ch-bar"></div></div>
+                <div class="row" style="margin-top:10px">
+                  <span class="grow" id="ch-status">等待开始</span>
+                  <label class="chk"><input type="checkbox" id="ch-show-browser" /> 显示浏览器窗口</label>
+                </div>
+                <pre class="log" id="ch-log" style="margin-top:10px;max-height:120px">等待任务…</pre>
+              </div>
+
+              <div class="card chat-out">
+                <div class="row" style="align-items:center">
+                  <span class="card-title plain grow" style="margin:0">采集到的链接</span>
+                  <span class="muted nowrap" id="ch-result-count"></span>
+                  <button class="btn btn-ghost btn-sm" id="ch-clear" data-ico="trash">清空</button>
+                  <button class="btn btn-ghost btn-sm" id="ch-export" data-ico="export">导出</button>
+                  <button class="btn btn-accent btn-sm" id="ch-copy" data-ico="copy">复制全部</button>
+                </div>
+                <pre class="url-box chat-links" id="ch-links"></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             素材制作 · 去水印（原样保留）
+             ================================================================== -->
+        <section class="page hidden" id="page-tiktok">
+          <h1 class="page-title">去水印</h1>
+          <p class="page-sub">粘贴 TikTok / 抖音 分享链接或口令，解析后选择下载。支持视频与图集。</p>
+
+          <div class="card">
+            <div class="card-title">① 粘贴链接</div>
+            <textarea id="tk-urls" rows="4" placeholder="每行一条链接，支持一次粘贴多条（会自动去重）"></textarea>
+            <div class="row">
+              <button class="btn btn-primary" id="tk-parse" data-ico="search">开始解析</button>
+              <button class="btn btn-ghost" id="tk-paste" data-ico="copy">读取剪贴板</button>
+              <button class="btn btn-ghost" id="tk-clear" data-ico="trash">清空</button>
+              <span class="muted" id="tk-parse-msg">未解析</span>
+            </div>
+            <div class="progress slim"><div class="progress-bar" id="tk-parse-bar"></div></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">② 解析结果 <span class="muted" id="tk-count"></span></div>
+            <div class="cover-strip" id="tk-covers"></div>
+            <div class="row">
+              <button class="btn btn-ghost" id="tk-sel-all">全选</button>
+              <button class="btn btn-ghost" id="tk-sel-none">全不选</button>
+              <span class="muted" id="tk-sel-count">已选 0 项</span>
+            </div>
+            <div id="tk-table" class="table-wrap muted">暂无数据</div>
+            <div class="row" id="tk-failed-wrap" style="display:none">
+              <details class="details">
+                <summary class="muted">解析失败项</summary>
+                <pre class="log" id="tk-failed"></pre>
+              </details>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">③ 下载</div>
+            <div class="row">
+              <label class="field grow">保存目录
+                <input type="text" id="tk-out" placeholder="留空使用默认目录 downloads" />
+              </label>
+              <button class="btn btn-ghost" id="tk-out-pick" data-ico="pick">选择</button>
+              <button class="btn btn-ghost" id="tk-out-reset" data-ico="reset">默认</button>
+            </div>
+            <div class="row">
+              <label class="field">按序号下载（留空 = 用上方勾选）
+                <input type="text" id="tk-sel" placeholder="例：1,3-5" />
+              </label>
+              <label class="chk"><input type="checkbox" id="tk-auto-hd" /> 下载后自动送入高清（仅图片）</label>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary" id="tk-download" data-ico="download" disabled>下载选中</button>
+              <span class="btn-sep"></span>
+              <button class="btn btn-warn" id="tk-pause" data-ico="pause" disabled>暂停</button>
+              <button class="btn btn-accent" id="tk-resume" data-ico="play" disabled>继续</button>
+              <button class="btn btn-danger" id="tk-cancel" data-ico="stop" disabled>取消</button>
+              <span class="btn-sep"></span>
+              <button class="btn btn-ghost" id="tk-open-dir" data-ico="folder">打开下载目录</button>
+            </div>
+            <div class="progress"><div class="progress-bar" id="tk-bar"></div></div>
+            <pre class="log" id="tk-log">等待任务…</pre>
+          </div>
+
+          <div class="card" id="tk-result-card" style="display:none">
+            <div class="card-title">④ 下载结果</div>
+            <div class="row" id="tk-zip-row" style="display:none">
+              <a class="btn btn-primary" id="tk-zip" data-ico="package" href="#" download>下载全部（ZIP）</a>
+            </div>
+            <div class="gallery" id="tk-gallery"></div>
+            <div class="filelist" id="tk-files"></div>
+          </div>
+
+          <div class="card">
+            <details class="details">
+              <summary>🕘 下载历史（最近 100 条）</summary>
+              <div class="row">
+                <button class="btn btn-ghost" id="tk-hist-refresh" data-ico="refresh">刷新</button>
+                <button class="btn btn-danger" id="tk-hist-clear" data-ico="trash">清空历史</button>
+              </div>
+              <div id="tk-hist" class="table-wrap muted">点「刷新」加载</div>
+            </details>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             素材制作 · 高清修复（原样保留）
+             ================================================================== -->
+        <section class="page hidden" id="page-hd">
+          <h1 class="page-title">高清修复</h1>
+          <p class="page-sub">图片 / 视频 / 混合批量超分与修复。可暂停、可取消。</p>
+
+          <div class="card">
+            <div class="card-title">场景预设 <span class="muted">点一下自动填好下方参数</span></div>
+            <div class="capsules" id="hd-presets"><span class="muted">加载中…</span></div>
+            <div class="muted" id="hd-preset-msg">未套用预设（手动调参同样有效）</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">输入素材</div>
+            <div class="dropzone" id="hd-drop">
+              <div class="dropzone-inner">
+                <div class="dropzone-icon">⬆</div>
+                <div>把图片 / 视频拖到这里，或 <span class="link" id="hd-browse">点击选择文件</span></div>
+                <div class="muted" id="hd-drop-hint">支持 jpg / png / webp / heic，mp4 / mov / mkv 等</div>
+              </div>
+              <input type="file" id="hd-files" multiple hidden />
+            </div>
+            <div class="row">
+              <input type="text" id="hd-folder" placeholder="或填写文件夹路径（会处理其中所有文件）" />
+              <button class="btn btn-ghost" id="hd-recent" data-ico="import">导入最近下载</button>
+              <button class="btn btn-ghost" id="hd-clear" data-ico="trash">清空列表</button>
+            </div>
+            <div class="filelist" id="hd-picked"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">处理参数</div>
+            <div class="row">
+              <label class="field">模式
+                <select id="hd-mode">
+                  <option value="both">自动分流（图片+视频）</option>
+                  <option value="image">仅图片</option>
+                  <option value="video">仅视频</option>
+                </select>
+              </label>
+              <label class="field">图片模型<select id="hd-img-model"></select></label>
+              <label class="field">视频模型<select id="hd-vid-model"></select></label>
+            </div>
+            <div class="row">
+              <label class="field">放大倍数<select id="hd-scale"></select></label>
+              <label class="field">视频档位
+                <select id="hd-side">
+                  <option value="sharp">仅锐化 1080p（最快，纯 ffmpeg）</option>
+                  <option value="1920" selected>1920（推荐）</option>
+                  <option value="2560">2560</option>
+                  <option value="3840">3840</option>
+                </select>
+              </label>
+              <label class="field">输出长边上限
+                <select id="hd-max">
+                  <option value="2048（最快）">2048（最快）</option>
+                  <option value="4096（推荐）" selected>4096（推荐）</option>
+                  <option value="8192（超清，可能很慢）">8192（超清，可能很慢）</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label class="chk"><input type="checkbox" id="hd-face" /> 人脸修复（会变慢）</label>
+              <label class="chk"><input type="checkbox" id="hd-interp" /> 视频补帧（60fps，较慢）</label>
+            </div>
+            <div class="row">
+              <label class="field grow">保存目录
+                <input type="text" id="hd-out" placeholder="留空使用设置里的输出目录" />
+              </label>
+              <button class="btn btn-ghost" id="hd-out-pick" data-ico="pick">选择</button>
+              <button class="btn btn-ghost" id="hd-out-reset" data-ico="reset">默认</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">处理</div>
+            <div class="row">
+              <button class="btn btn-primary" id="hd-start" data-ico="play">开始处理</button>
+              <span class="btn-sep"></span>
+              <button class="btn btn-warn" id="hd-pause" data-ico="pause" disabled>暂停</button>
+              <button class="btn btn-accent" id="hd-resume" data-ico="play" disabled>继续</button>
+              <button class="btn btn-danger" id="hd-cancel" data-ico="stop" disabled>取消</button>
+              <span class="btn-sep"></span>
+              <button class="btn btn-ghost" id="hd-open" data-ico="folder">打开输出目录</button>
+            </div>
+            <div class="progress"><div class="progress-bar" id="hd-bar"></div></div>
+            <pre class="log" id="hd-log">等待任务…</pre>
+          </div>
+
+          <div class="card" id="hd-result-card" style="display:none">
+            <div class="card-title">处理结果</div>
+            <div class="gallery" id="hd-gallery"></div>
+            <div class="filelist" id="hd-videos"></div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             素材制作 · 素材库（原样保留）
+             ================================================================== -->
+        <section class="page hidden" id="page-library">
+          <h1 class="page-title">素材库</h1>
+          <p class="page-sub">本地输出目录里的图片与视频。</p>
+          <div class="card">
+            <div class="row">
+              <button class="btn btn-ghost" id="lib-refresh" data-ico="refresh">刷新</button>
+              <button class="btn btn-ghost" id="lib-open" data-ico="folder">打开输出目录</button>
+              <button class="btn btn-ghost" id="lib-cleanup" data-ico="cleanup">清理临时文件</button>
+              <span class="muted" id="lib-msg"></span>
+            </div>
+            <div class="muted" id="lib-roots"></div>
+            <div class="gallery" id="lib-gallery"></div>
+            <div id="lib-table" class="table-wrap muted">点「刷新」加载</div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             素材制作 · 模型中心（原样保留）
+             ================================================================== -->
+        <section class="page hidden" id="page-models">
+          <h1 class="page-title">模型中心</h1>
+          <p class="page-sub">模型清单、接入状态与场景预设。显存参考：RTX 5070 · 12GB。</p>
+
+          <div class="card">
+            <div class="card-title">模型库</div>
+            <div class="row">
+              <label class="field">按分类筛选<select id="md-cat"><option value="">全部分类</option></select></label>
+              <button class="btn btn-ghost" id="md-refresh" data-ico="refresh">刷新</button>
+            </div>
+            <div class="model-grid" id="md-grid">加载中…</div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">组合预设</div>
+            <div class="preset-grid" id="md-presets">加载中…</div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             系统 · 任务中心
+             ================================================================== -->
+        <section class="page hidden" id="page-jobs">
+          <div class="page-head">
+            <h1 class="page-title">任务中心</h1>
+            <p class="page-sub">采集、下载、高清三类的运行中与历史任务，进度实时推送。</p>
+          </div>
+
+          <div class="toolbar">
+            <button class="btn btn-ghost" id="jb-refresh" data-ico="refresh">刷新</button>
+            <label class="field">状态
+              <select id="jb-filter">
+                <option value="">全部</option>
+                <option value="running">运行中</option>
+                <option value="done">已完成</option>
+                <option value="failed">失败</option>
+              </select>
+            </label>
+            <span class="spacer"></span>
+            <span class="muted" id="jb-count"></span>
+          </div>
+
+          <div class="card tight">
+            <div class="table-wrap" id="jb-table">
+              <div class="empty"><div class="empty-desc">暂无任务</div></div>
+            </div>
+          </div>
+
+          <div class="card" id="jb-detail-card" style="display:none">
+            <div class="card-title">任务详情 <span class="muted" id="jb-detail-title"></span></div>
+            <div class="kv" id="jb-detail"></div>
+            <pre class="log tall" id="jb-log"></pre>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             系统 · 工具箱（原样保留）
+             ================================================================== -->
+        <section class="page hidden" id="page-tools">
+          <h1 class="page-title">工具箱</h1>
+          <p class="page-sub">网络诊断、格式转换、抽帧与批量重命名。</p>
+
+          <div class="card">
+            <div class="card-title">🔌 网络诊断</div>
+            <button class="btn btn-ghost" id="tl-diag">开始诊断</button>
+            <pre class="log" id="tl-diag-out">点「开始诊断」运行（约 40 秒）</pre>
+          </div>
+
+          <div class="card">
+            <div class="card-title">🎞 视频转 GIF</div>
+            <div class="row">
+              <input type="text" id="gif-video" placeholder="视频文件完整路径" />
+              <label class="field">帧率<input type="text" id="gif-fps" value="12" /></label>
+              <label class="field">宽<input type="text" id="gif-scale" value="480" /></label>
+              <button class="btn btn-primary" id="gif-run">转换</button>
+            </div>
+            <pre class="log" id="gif-msg"></pre>
+          </div>
+
+          <div class="card">
+            <div class="card-title">📷 视频抽帧</div>
+            <div class="row">
+              <input type="text" id="fr-video" placeholder="视频文件完整路径" />
+              <label class="field">每秒帧数<input type="text" id="fr-fps" value="1" /></label>
+              <input type="text" id="fr-dir" placeholder="输出目录（可留空）" />
+              <button class="btn btn-primary" id="fr-run">抽帧</button>
+            </div>
+            <pre class="log" id="fr-msg"></pre>
+          </div>
+
+          <div class="card">
+            <div class="card-title">✏️ 批量重命名</div>
+            <div class="row">
+              <input type="text" id="rn-pattern" placeholder="前缀，例如 素材_" />
+              <label class="field">起始序号<input type="text" id="rn-start" value="1" /></label>
+              <button class="btn btn-primary" id="rn-run">重命名最近下载</button>
+            </div>
+            <pre class="log" id="rn-msg"></pre>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             系统 · 运行日志
+             ================================================================== -->
+        <section class="page hidden" id="page-logs">
+          <div class="page-head">
+            <h1 class="page-title">运行日志</h1>
+            <p class="page-sub">
+              应用运行日志（最近 500 行）—— 默认读「统一日志 app.log」的末尾 500 行。
+              带 <span class="mono">ERROR</span> / <span class="mono">WARNING</span> 的行会按级别着色，
+              方便快速定位出问题的那一步。
+            </p>
+          </div>
+
+          <div class="toolbar">
+            <label class="field grow">日志文件
+              <select id="lg-file"><option value="">加载中…</option></select>
+            </label>
+            <label class="field">级别筛选
+              <select id="lg-level">
+                <option value="">全部级别</option>
+                <option value="ERROR">ERROR</option>
+                <option value="WARNING">WARNING</option>
+                <option value="INFO">INFO</option>
+                <option value="DEBUG">DEBUG</option>
+                <option value="OTHER">其它（无级别）</option>
+              </select>
+            </label>
+            <label class="field">读取行数
+              <select id="lg-lines">
+                <option value="200">200</option>
+                <option value="500" selected>500</option>
+                <option value="1000">1000</option>
+                <option value="2000">2000</option>
+              </select>
+            </label>
+            <label class="field grow">搜索
+              <input type="text" id="lg-query" placeholder="关键字过滤（不区分大小写）" />
+            </label>
+            <label class="chk"><input type="checkbox" id="lg-wrap" /> 自动换行</label>
+          </div>
+
+          <div class="toolbar">
+            <button class="btn btn-ghost" id="lg-refresh" data-ico="refresh">刷新</button>
+            <button class="btn btn-ghost" id="lg-open" data-ico="folder">打开日志目录</button>
+            <button class="btn btn-ghost" id="lg-copy" data-ico="copy">复制全部</button>
+            <button class="btn btn-ghost" id="lg-export" data-ico="export">导出 TXT</button>
+            <span class="spacer"></span>
+            <span class="muted" id="lg-stat"></span>
+          </div>
+
+          <div class="card tight">
+            <div class="log-view" id="lg-view">—</div>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             系统 · 设置（原样保留 + 采集分区）
+             ================================================================== -->
+        <section class="page hidden" id="page-settings">
+          <h1 class="page-title">设置</h1>
+          <p class="page-sub">采集、浏览器、代理与数据选项</p>
+
+          <div class="card">
+            <div class="card-title">输出</div>
+            <div class="row">
+              <label class="field grow">图片/视频输出根目录<input type="text" id="set-out" /></label>
+              <button class="btn btn-ghost" id="set-open" data-ico="folder">打开</button>
+            </div>
+            <div class="row">
+              <label class="chk"><input type="checkbox" id="set-date" /> 按日期建子文件夹</label>
+              <label class="chk"><input type="checkbox" id="set-skip" /> 跳过已处理过的文件</label>
+              <label class="chk"><input type="checkbox" id="set-keep" /> 保留临时抽帧（占空间）</label>
+              <label class="chk"><input type="checkbox" id="set-beep" /> 完成后提示音</label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">采集设置</div>
+            <div class="row">
+              <label class="field">默认每账号采集数量
+                <input type="number" id="cset-count" min="1" max="50" style="width:100px;min-width:100px" />
+              </label>
+              <label class="field">时区
+                <select id="cset-tz"></select>
+              </label>
+              <label class="field">日志级别
+                <select id="cset-loglevel">
+                  <option value="DEBUG">DEBUG</option>
+                  <option value="INFO">INFO</option>
+                  <option value="WARNING">WARNING</option>
+                  <option value="ERROR">ERROR</option>
+                </select>
+              </label>
+              <label class="chk"><input type="checkbox" id="cset-headless" /> 无头浏览器（后台运行）</label>
+              <label class="chk"><input type="checkbox" id="cset-notify" /> 采集完成提示音</label>
+            </div>
+            <div class="row">
+              <label class="field">页面加载超时 (ms)<input type="number" id="cset-timeout" style="width:120px;min-width:120px" /></label>
+              <label class="field">最大重试次数<input type="number" id="cset-retry" style="width:100px;min-width:100px" /></label>
+              <label class="field">账号间隔 (秒)<input type="number" id="cset-interval" step="0.1" style="width:100px;min-width:100px" /></label>
+            </div>
+            <div class="row">
+              <label class="field">聊天采集默认条数
+                <input type="number" id="cset-chat-count" min="1" max="200" style="width:110px;min-width:110px" />
+              </label>
+              <label class="field">历史保留天数
+                <input type="number" id="cset-histkeep" min="1" max="3650" style="width:110px;min-width:110px" />
+              </label>
+              <label class="field">日志保留天数
+                <input type="number" id="cset-logkeep" min="1" max="3650" style="width:110px;min-width:110px" />
+              </label>
+              <label class="chk"><input type="checkbox" id="cset-autoupdate" /> 启动时检查更新</label>
+            </div>
+            <div class="row">
+              <label class="field grow">导出目录<input type="text" id="cset-export-dir" placeholder="exports（相对程序根，或绝对路径）" /></label>
+              <label class="field grow">日志目录<input type="text" id="cset-log-dir" placeholder="logs" /></label>
+            </div>
+            <div class="row">
+              <label class="field grow">GitHub 仓库 (owner/repo)
+                <input type="text" id="cset-repo" placeholder="例如 chenquaerere/tiktok-link-collector" />
+              </label>
+              <label class="field grow">更新源（自定义 api 地址，可留空）
+                <input type="text" id="cset-update-url" placeholder="留空则用 GitHub Releases" /></label>
+            </div>
+            <div class="row">
+              <label class="chk"><input type="checkbox" id="cset-proxy-on" /> 启用代理</label>
+              <label class="field">类型
+                <select id="cset-proxy-type">
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                  <option value="socks5">SOCKS5</option>
+                </select>
+              </label>
+              <label class="field">主机<input type="text" id="cset-proxy-host" placeholder="127.0.0.1" /></label>
+              <label class="field">端口<input type="text" id="cset-proxy-port" placeholder="11304" /></label>
+              <button class="btn btn-ghost" id="cset-proxy-test">测试连通</button>
+              <span class="muted" id="cset-proxy-msg"></span>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary" id="cset-save" data-ico="save">保存采集设置</button>
+              <button class="btn btn-ghost" id="cset-reset" data-ico="reset">恢复默认</button>
+              <span class="muted" id="cset-msg"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">高清参数</div>
+            <div class="row">
+              <label class="chk"><input type="checkbox" id="set-face" /> 默认开启人脸修复</label>
+              <label class="chk"><input type="checkbox" id="set-half" /> 半精度（省显存，推荐）</label>
+              <label class="chk"><input type="checkbox" id="set-interp" /> 默认视频补帧</label>
+              <label class="chk"><input type="checkbox" id="set-skipsim" /> 跳过近似帧（提速）</label>
+            </div>
+            <div class="row">
+              <label class="field">视频编码器
+                <select id="set-encoder">
+                  <option value="auto">自动（NVENC → MF → x264）</option>
+                  <option value="h264_nvenc">h264_nvenc（显卡）</option>
+                  <option value="h264_mf">h264_mf（系统）</option>
+                  <option value="libx264">libx264（CPU）</option>
+                </select>
+              </label>
+              <label class="field">画质 CRF<input type="text" id="set-crf" /></label>
+              <label class="field">切块大小 tile（0=整帧）<input type="text" id="set-tile" /></label>
+              <label class="field">人脸处理长边<input type="text" id="set-facework" /></label>
+            </div>
+            <div class="row">
+              <label class="field">输出长边上限<input type="text" id="set-maxsize" /></label>
+              <label class="field">视频输出长边<input type="text" id="set-vidmax" /></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">数据库备份</div>
+            <div class="row">
+              <button class="btn btn-ghost" id="cset-backup" data-ico="save">立即备份</button>
+              <button class="btn btn-ghost" id="cset-backups" data-ico="reset">从备份恢复</button>
+              <span class="muted" id="cset-maint-msg"></span>
+            </div>
+            <p class="muted" style="margin-top:8px">
+              启动时每日自动备份一次，保留最近 10 份。恢复只能选 <span class="mono">backups/</span>
+              里的文件，且需要点第二次确认 —— 恢复是不可逆操作。
+            </p>
+            <div id="cset-backup-list" class="table-wrap muted" style="margin-top:10px"></div>
+
+            <div class="row" style="margin-top:14px">
+              <span class="muted nowrap">只读路径</span>
+              <button class="btn btn-ghost btn-sm" id="cset-paths">显示目录位置</button>
+              <button class="btn btn-ghost btn-sm" id="cset-open-logs" data-ico="folder">打开日志目录</button>
+            </div>
+            <div class="kv" id="cset-path-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">局域网 / 手机访问</div>
+            <p class="muted">
+              开启后，<strong>同一个 WiFi 下的手机/平板直接打开地址即可使用，无需登录</strong>。
+              地址会显示在本页下方与程序日志里。
+            </p>
+            <p class="muted">
+              ⚠ 请只在可信网络里开启：同一网络内的任何设备都能访问本程序
+              （可解析、下载、查看输出目录的结果文件）。不用时建议关闭。
+            </p>
+            <div class="row">
+              <label class="chk"><input type="checkbox" id="set-lan" /> 允许局域网访问（手机）</label>
+              <button class="btn btn-ghost" id="set-lan-info" data-ico="phone">显示手机访问地址</button>
+            </div>
+            <pre class="log" id="set-lan-addr">勾选后保存，然后<strong>重启程序</strong>生效。</pre>
+          </div>
+
+          <div class="card">
+            <div class="row">
+              <button class="btn btn-primary" id="set-save" data-ico="save">保存设置</button>
+              <span class="muted" id="set-msg"></span>
+            </div>
+            <p class="muted">局域网访问需重启程序生效。</p>
+          </div>
+        </section>
+
+        <!-- ==================================================================
+             系统 · 关于（原样保留 + 采集环境）
+             ================================================================== -->
+        <section class="page hidden" id="page-about">
+          <h1 class="page-title">关于</h1>
+          <p class="page-sub">批量采集本人 TikTok 账号的作品链接，数据本地存储。</p>
+          <div class="card">
+            <div class="card-title">运行环境</div>
+            <pre class="log" id="about-env">加载中…</pre>
+          </div>
+          <div class="card">
+            <div class="card-title">采集环境自检</div>
+            <div class="kv" id="about-collect">加载中…</div>
+            <div class="row">
+              <button class="btn btn-ghost" id="about-check-update" data-ico="refresh">检查采集模块更新</button>
+              <span class="muted" id="about-update-msg"></span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">更新日志</div>
+            <pre class="log" id="about-changelog">加载中…</pre>
+          </div>
+          <div class="card">
+            <div class="card-title">系统</div>
+            <div class="row">
+              <button class="btn btn-ghost" id="about-open" data-ico="folder">打开输出目录</button>
+              <button class="btn btn-danger" id="about-quit" data-ico="power">退出程序</button>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+
+    <footer class="taskbar">
+      <span id="task-summary">就绪</span>
+      <span class="taskbar-right" id="toast"></span>
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/collector.js"></script>
+</body>
+
+</html>

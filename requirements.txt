@@ -1,0 +1,67 @@
+# ==============================================================================
+#  TK 素材工坊 · TK Studio —— Python 依赖清单
+#
+#  版本号与开发机实测环境完全一致（Windows x64 / Python 3.10.11）。
+#  完整安装步骤见仓库根目录 INSTALL.md —— 请按那里的顺序安装：
+#
+#      ★ 先装 torch / torchvision（第 4 步），再执行 pip install -r requirements.txt
+#
+#  原因是 basicsr / gfpgan / realesrgan 都声明了 `torch>=1.7`：
+#  如果先装本文件，pip 会顺手从 PyPI 拉一个 CPU 版 torch 下来，
+#  再装 CUDA 版就会白装一次（多下 3 GB）。先装好 torch 就不会重复。
+#
+#  torch / torchvision 不在本文件中，因为它们必须从 PyTorch 官方索引获取 ——
+#  见文件末尾「深度学习依赖」一节的命令。
+# ==============================================================================
+
+# ---------- 本地 Web 服务（FastAPI，仅监听 127.0.0.1，不对外开放）----------
+fastapi==0.141.1
+uvicorn==0.52.1
+websockets==15.0.1          # uvicorn 的 WebSocket 协议实现；本程序用 SSE，装上可避免启动告警
+aiofiles==24.1.0            # ASGI 静态文件与流式响应
+python-multipart==0.0.32    # 必需：上传素材用的 multipart 表单解析
+
+# ---------- 桌面外壳（WebView2 原生窗口，不打开浏览器）----------
+pywebview==6.2.1
+pythonnet==3.1.0            # pywebview 在 Windows 上靠它调用 WebView2
+
+# ---------- 网络请求 ----------
+requests==2.34.2
+
+# ---------- 链接采集（Playwright 驱动 Chromium）----------
+playwright==1.63.0
+
+# ---------- 图像 / 表格 / 数据处理 ----------
+pillow==11.3.0
+pillow_heif==1.5.0          # iPhone HEIC 格式支持
+numpy==1.26.4
+opencv-python==4.11.0.86
+openpyxl==3.1.5             # 导出 XLSX
+tqdm==4.70.0
+
+# ---------- 时区数据 ----------
+# 必需：采集内核用 zoneinfo 读时区，而 Windows 系统本身不带 tzdata 库，
+# 缺了它 ZoneInfo("Asia/Shanghai") 会直接抛 ZoneInfoNotFoundError。
+tzdata
+
+# ---------- 超分 / 人脸修复内核 ----------
+# 这三个包会连带装上 scipy / scikit-image / lmdb / tb-nightly 等。
+basicsr==1.4.2
+gfpgan==1.3.8
+facexlib==0.3.0
+realesrgan==0.3.0
+
+# ==============================================================================
+#  深度学习依赖（单独安装，不在本文件内）
+#  见 INSTALL.md 第 4 步。两条命令选一条：
+#
+#  ── A. GPU 版（NVIDIA 显卡；RTX 50 系 Blackwell 必须用 CUDA 12.8）──
+#     venv\Scripts\python.exe -m pip install ^
+#         torch==2.11.0+cu128 torchvision==0.26.0+cu128 ^
+#         --index-url https://download.pytorch.org/whl/cu128
+#
+#  ── B. CPU 版（没有 NVIDIA 显卡；体积小很多，但推理慢 5~10 倍）──
+#     venv\Scripts\python.exe -m pip install ^
+#         torch==2.11.0 torchvision==0.26.0 ^
+#         --index-url https://download.pytorch.org/whl/cpu
+# ==============================================================================

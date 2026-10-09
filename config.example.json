@@ -1,0 +1,73 @@
+{
+  "app": {
+    "theme": "dark",
+    "language": "zh-CN",
+    "first_run": true,
+    "last_seen_version": "",
+    "window": {
+      "width": 1440,
+      "height": 920
+    }
+  },
+  "collector": {
+    "default_collect_count": 4,
+    "default_date": "today",
+    "timezone": "Asia/Shanghai",
+    "auto_open_browser_on_start": false,
+    "browser_type": "chromium",
+    "browser_headless": true,
+    "page_load_timeout_ms": 30000,
+    "max_retry": 3,
+    "task_interval_ms": 2000,
+    "error_wait_ms": 3000,
+    "account_interval_seconds": 4.0,
+    "db_path": "data/tiktok_link_collector.db",
+    "export_dir": "exports",
+    "links_log_dir": "links_log",
+    "auto_save": true,
+    "history_keep_days": 90,
+    "notify_sound": true,
+    "log_level": "INFO",
+    "log_dir": "logs",
+    "log_keep_days": 30,
+    "update_repo": "",
+    "update_url": "",
+    "auto_check_update": true,
+    "proxy_enabled": false,
+    "proxy_type": "http",
+    "proxy_host": "",
+    "proxy_port": "",
+    "chat_last_count": 22
+  },
+  "watermark": {
+    "output_root": "downloads",
+    "date_folder": true,
+    "skip_existing": true,
+    "keep_frames": false,
+    "beep_on_done": true,
+    "lan_access": false,
+    "lan_password": "",
+    "tk_concurrent": 2,
+    "tk_retries": 3,
+    "tk_quality": "hd",
+    "tk_proxy": ""
+  },
+  "hd": {
+    "face_enhance": false,
+    "face_work_side": 4096,
+    "image_model": "realesr-general-x4v3",
+    "image_scale": 4,
+    "tile": 0,
+    "half": true,
+    "video_model": "realesr-general-x4v3",
+    "video_scale": 2,
+    "video_encoder": "auto",
+    "video_crf": 18,
+    "interpolate": false,
+    "max_output_size": 4096,
+    "video_max_side": 1920,
+    "video_skip_similar": true,
+    "video_skip_thr": 1.5,
+    "video_sharp": true
+  }
+}

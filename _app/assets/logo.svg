@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="TK去水印高清程序">
+  <title>TK去水印高清程序</title>
+  <desc>棱镜图标：红光射入、青光射出，寓意模糊进、清晰出。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e1e2a"/>
+      <stop offset="1" stop-color="#101016"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <path d="M14 157 H76" fill="none" stroke="#FE2C55" stroke-width="23.5" stroke-linecap="round"/>
+  <path d="M170 133 H242" fill="none" stroke="#25F4EE" stroke-width="23.5" stroke-linecap="round"/>
+
+  <path d="M128 55 L55 201 L201 201 Z" fill="#ffffff" fill-opacity="0.06"
+        stroke="#9ca3af" stroke-width="4" stroke-linejoin="round"/>
+
+  <path d="M128 62 L96 123" fill="none" stroke="#ffffff" stroke-opacity="0.35"
+        stroke-width="2.8" stroke-linecap="round"/>
+</svg>

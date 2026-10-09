@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    托盘启动器编译工程（TK 素材工坊）
+
+    目标框架 deliberately 选 net48：
+      - Windows 10 / 11 自带 .NET Framework 4.8，编译产物**零依赖**（约 15-20 KB），
+        与合并前的启动器形态一致，用户无需另装运行时。
+      - 对比 net10.0-windows + self-contained 会带来约 70 MB 体积膨胀。
+
+    用法（在程序根执行）：
+        dotnet build scripts/launcher/_launcher.csproj -c Release
+    产物：
+        scripts/launcher/bin/Release/TK素材工坊.exe
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+
+    <!-- 产物命名：程序根的可执行文件名 -->
+    <AssemblyName>TK素材工坊</AssemblyName>
+    <RootNamespace>TKStudio</RootNamespace>
+
+    <!-- 内嵌图标：取自原采集器（md5 cde614e02aa02d84a5e5e3d1bfd8f5be） -->
+    <ApplicationIcon>..\..\assets\icon.ico</ApplicationIcon>
+
+    <!-- 版本信息：★ 必须与 _app/common/version.py 的 APP_VERSION 同步 -->
+    <Product>TK 素材工坊</Product>
+    <AssemblyTitle>TK 素材工坊</AssemblyTitle>
+    <Description>采集 · 去水印 · 高清修复，一站式素材工作台</Description>
+    <Company>TK Studio</Company>
+    <Copyright>Copyright © 2026 TK Studio</Copyright>
+    <Version>1.4.1</Version>
+    <AssemblyVersion>1.4.1.0</AssemblyVersion>
+    <FileVersion>1.4.1.0</FileVersion>
+
+    <!-- 只编译 _launcher.cs，避免 SDK 默认把所有 .cs 都收进来 -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>CS0168;CS0219;CS0414;CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\_launcher.cs" />
+  </ItemGroup>
+
+</Project>
