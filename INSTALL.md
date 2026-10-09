@@ -58,12 +58,12 @@ python -V
 ### 第 2 步 · 获取源码
 
 ```bat
-git clone https://github.com/chenquaerere/TK素材工坊.git
-cd TK素材工坊
+git clone https://github.com/chenquaerere/tk-studio.git
+cd tk-studio
 ```
 
-> 仓库名含中文，若命令行不便，可在 GitHub 页面点 **Code → Download ZIP** 下载后解压。
-> 解压路径**建议不含空格与特殊符号**，例如 `D:\TKStudio`。
+> 也可以直接在 GitHub 页面点 **Code → Download ZIP** 下载后解压（无需装 git）。
+> 解压路径**建议不含空格与中文**，例如 `D:\TKStudio`。
 
 ### 第 3 步 · 创建虚拟环境
 

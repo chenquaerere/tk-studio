@@ -23,7 +23,12 @@
 
 ### 方式一 · 从本仓库克隆源码
 
-按 **[INSTALL.md](INSTALL.md)** 走完安装步骤，然后启动：
+```bat
+git clone https://github.com/chenquaerere/tk-studio.git
+cd tk-studio
+```
+
+然后按 **[INSTALL.md](INSTALL.md)** 走完安装步骤，启动：
 
 ```bat
 venv\Scripts\python.exe desktop.py
