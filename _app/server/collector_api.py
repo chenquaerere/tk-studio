@@ -15,7 +15,8 @@
    这样"未使用采集功能就不加载 Playwright"。
 3. **不做跨运行去重等业务判断**：本层只做参数校验与序列化，
    所有采集规则一律由内核决定（见 collector 包注释中的五条铁律）。
-4. **导出/下载路径受控**：只允许 `exports/` 与 `links_log/` 下的文件。
+4. **导出/下载路径受控**：只允许当前导出目录与 `links_log/` 下的文件；
+   导出目录可在设置页改（`export_dir`），下载白名单跟着一起变。
 """
 from __future__ import annotations
 
@@ -76,6 +77,55 @@ def shutdown() -> None:
             except Exception:
                 pass
             _ctx = None
+
+
+# --------------------------------------------------- 可编辑目录（导出 / 日志）
+
+def _setting_dir(key: str, default: Path) -> Path:
+    """设置页里可编辑的目录：留空用默认目录，相对路径按程序根解析。
+
+    为什么不像 db_path 那样只在启动时解析一次：
+    「导出目录」改完要立刻能用（不然又成了"设置了不生效"），
+    所以每次用到都重新读配置；「日志目录」是启动期初始化的，改完需重启
+    （bootstrap 里读同一个键，前端已注明）。
+    """
+    try:
+        raw = ctx().config.get(key)
+    except Exception:  # noqa: BLE001 —— 容器不可用时退回默认目录
+        raw = None
+    if raw is None or not str(raw).strip():
+        return default
+    return _paths.resolve(raw)
+
+
+def _exports_dir() -> Path:
+    """当前生效的导出目录（默认 exports/）。"""
+    return _setting_dir("export_dir", _paths.EXPORTS_DIR)
+
+
+def _logs_dir() -> Path:
+    """当前生效的日志目录（默认 logs/）。"""
+    return _setting_dir("log_dir", _paths.LOGS_DIR)
+
+
+# (设置键, 界面名称, 默认目录) —— 设置页里可编辑、且保存时要先建好的目录。
+_DIR_SETTING_KEYS = (("export_dir", "导出目录", _paths.EXPORTS_DIR),
+                     ("log_dir", "日志目录", _paths.LOGS_DIR))
+
+
+def _ensure_setting_dirs(values: dict) -> None:
+    """校验并创建设置里的可编辑目录：不可用时抛 400，绝不「半保存」。
+
+    先验证再落盘，避免出现「设置已保存，但导出时才发现目录用不了」。
+    """
+    for key, label, default in _DIR_SETTING_KEYS:
+        if key not in values:
+            continue
+        try:
+            _paths.resolve(values.get(key) or default).mkdir(parents=True,
+                                                             exist_ok=True)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, f"{label}无法使用：{exc}")
 
 
 # ------------------------------------------------------------------ 序列化
@@ -170,6 +220,40 @@ def _get_account(account_id: str) -> Account:
 
 # ------------------------------------------------------------------ 元信息
 
+# 应用内通知卡片的外观边界：宽度 280~720px（更窄标题就折行，更宽会压住页面内容），
+# 缩放 0.8~1.6（等比放大字号与内距）。越界一律收敛，避免前端算出畸形卡片。
+NOTIFY_CARD_WIDTH_RANGE = (280, 720)
+NOTIFY_CARD_SCALE_RANGE = (0.8, 1.6)
+
+# 通知相关的布尔开关：脚本/curl 直接 POST 字符串时必须按语义解析
+# （bool("false") == True 是个坑，2026-10-10 一并兜住）
+_NOTIFY_BOOL_KEYS = {"notify_sound"}
+
+
+def _clamp_number(value, low, high, default):
+    """把任意输入收敛成 [low, high] 内的数字；无法解析时用默认值。"""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    if n != n:                      # NaN
+        return default
+    return min(high, max(low, n))
+
+
+def _coerce_setting(key: str, value):
+    """把设置值收敛到合法类型/范围。前端已经传对类型，这里兜底脚本直接 POST。"""
+    if key in _NOTIFY_BOOL_KEYS:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() not in ("", "0", "false", "no", "off")
+    if key == "notify_card_width":
+        return int(_clamp_number(value, *NOTIFY_CARD_WIDTH_RANGE, 420))
+    if key == "notify_card_scale":
+        return round(_clamp_number(value, *NOTIFY_CARD_SCALE_RANGE, 1.0), 2)
+    return value
+
+
 @router.get("/meta")
 def meta():
     """采集模块的元信息：地区字典、时区、状态文案、默认值。"""
@@ -185,6 +269,12 @@ def meta():
         "timezone": c.timezone(),
         # 采集结束是否播提示音 / 弹系统通知（原桌面版有此开关，默认开）
         "notify_sound": bool(c.config.get("notify_sound", True)),
+        # 通知卡片外观（2026-10-10，2026-10-11 收窄）：完成提醒固定画在程序
+        # 界面右下角，只有一条通道；可调的只剩卡片宽度/缩放。
+        "notify_card_width": int(_clamp_number(
+            c.config.get("notify_card_width", 420), *NOTIFY_CARD_WIDTH_RANGE, 420)),
+        "notify_card_scale": round(_clamp_number(
+            c.config.get("notify_card_scale", 1.0), *NOTIFY_CARD_SCALE_RANGE, 1.0), 2),
         "status_messages": {
             "completed": "完成", "partial": "当日作品不足", "empty": "今日没有发现作品",
             "failed": "失败", "skipped": "已跳过", "pending": "等待中", "running": "采集中",
@@ -731,6 +821,12 @@ def _summary_text(s: dict) -> str:
         extra.append(f"额外采集 {s['pinned_collected']} 条置顶（今天/昨天发布，不占数量）")
     if s.get("pinned_skipped"):
         extra.append(f"跳过 {s['pinned_skipped']} 条旧置顶作品（不计入数量）")
+    if s.get("restored"):
+        extra.append(f"已回滚保留 {s['restored']} 条旧记录（采集失败且无新记录，未丢失）")
+    if s.get("login_aborted"):
+        extra.append("登录态失效已提前停止，后面账号的旧记录未清除")
+    if s.get("links_kept"):
+        extra.append(f"当日链接日志保留 {s['links_kept']} 条（本次没采到链接，未清空）")
     text = f"共 {s.get('account_count', 0)} 个账号，" + "，".join(parts)
     text += f"；实际入库 {s.get('new_videos', 0)} 条"
     if extra:
@@ -910,9 +1006,10 @@ def export(payload: dict):
         task_id=r["first_task_id"] or "", status=r["status"] or "ok",
     ) for r in rows_raw]
 
-    _paths.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    export_dir = _exports_dir()
+    export_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    target = _paths.EXPORTS_DIR / f"采集结果_{stamp}.{fmt}"
+    target = export_dir / f"采集结果_{stamp}.{fmt}"
     svc = ExportService
     if fmt == "txt":
         svc.export_txt(export_rows, str(target),
@@ -934,12 +1031,12 @@ def export(payload: dict):
 
 @router.get("/export/download")
 def export_download(path: str = Query(...)):
-    """下载导出文件（受控：只允许 exports/ 下的文件）。"""
+    """下载导出文件（受控：只允许当前导出目录下的文件）。"""
     p = Path(path).resolve()
     try:
-        p.relative_to(_paths.EXPORTS_DIR.resolve())
+        p.relative_to(_exports_dir().resolve())
     except ValueError:
-        raise HTTPException(403, "只能下载 exports/ 目录下的文件")
+        raise HTTPException(403, "只能下载导出目录下的文件")
     if not p.is_file():
         raise HTTPException(404, "文件不存在")
     return FileResponse(str(p), filename=p.name)
@@ -947,7 +1044,7 @@ def export_download(path: str = Query(...)):
 
 @router.get("/exports")
 def list_exports():
-    d = _paths.EXPORTS_DIR
+    d = _exports_dir()
     if not d.is_dir():
         return {"files": []}
     files = sorted(d.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True)[:100]
@@ -1192,13 +1289,15 @@ def _chat_collect_worker(job, acc: Account, target: ChatTarget, count: int,
 
 _COLLECTOR_SETTING_KEYS = [
     "default_collect_count", "timezone", "browser_headless", "page_load_timeout_ms",
-    "max_retry", "account_interval_seconds", "task_interval_ms", "error_wait_ms",
+    "max_retry", "account_interval_seconds",
     "history_keep_days", "notify_sound", "log_level", "log_keep_days",
     "update_repo", "update_url",
     "auto_check_update", "proxy_enabled", "proxy_type", "proxy_host", "proxy_port",
     "chat_last_count",
     # 原桌面版「数据 / 日志」分组里可编辑的两个路径（此前只在「关于」页只读展示）
     "export_dir", "log_dir",
+    # 通知卡片外观（2026-10-10）
+    "notify_card_width", "notify_card_scale",
 ]
 
 
@@ -1210,9 +1309,12 @@ def get_settings():
 
 @router.post("/settings")
 def set_settings(payload: dict):
-    values = {k: v for k, v in (payload or {}).items() if k in _COLLECTOR_SETTING_KEYS}
+    values = {k: _coerce_setting(k, v)
+              for k, v in (payload or {}).items() if k in _COLLECTOR_SETTING_KEYS}
     if not values:
         raise HTTPException(400, "没有可保存的设置项")
+    # 可编辑目录先验证再落盘：写不进去就报错，不留下"设置已保存但目录不可用"。
+    _ensure_setting_dirs(values)
     ucfg.update("collector", values)
     c = ctx()
     c.config.load()          # 热更新到当前服务容器
@@ -1227,6 +1329,15 @@ def set_settings(payload: dict):
                 str(c.config.get("log_level", "INFO")).upper())
         except (ValueError, TypeError):  # noqa: PERF203
             c.logger.warning("日志级别热更新失败：%r", values.get("log_level"))
+    if "history_keep_days" in values:
+        # 历史保留天数可以立刻生效：只清理过期的任务记录，
+        # 素材库作品与可续采任务都不在清理范围内（见 CollectorServices.prune_history）。
+        try:
+            removed = c.prune_history()
+            if removed:
+                c.logger.info("按新设置清理了 %d 条过期任务记录", removed)
+        except Exception:  # noqa: BLE001 —— 清理失败不影响设置已保存
+            c.logger.warning("按新设置清理采集历史失败", exc_info=True)
     return {"ok": True, "saved": list(values.keys())}
 
 
@@ -1330,8 +1441,9 @@ def env_info():
         "sessions": str(_paths.DATA_DIR / "sessions"),
         # 这些目录只读展示（前端不提供手改入口）：路径写坏会连带影响
         # 日志轮转与结果导出，风险远大于收益。
-        "exports_dir": str(_paths.EXPORTS_DIR),
-        "logs_dir": str(_paths.LOGS_DIR),
+        # 例外：exports / logs 两个目录在设置页可改，这里显示的就是当前生效值。
+        "exports_dir": str(_exports_dir()),
+        "logs_dir": str(_logs_dir()),
         "links_log_dir": str(_paths.LINKS_LOG_DIR),
         "backups_dir": str(_paths.BACKUPS_DIR),
         "timezone": c.timezone(),

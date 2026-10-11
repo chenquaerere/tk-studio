@@ -47,32 +47,35 @@ _HD_KEYS = {
 }
 
 DEFAULTS: Dict[str, Dict[str, Any]] = {
+    # 2026-10-11 清理：theme / language / first_run / window 四个键全仓库没有任何
+    # 读取点（窗口尺寸实际存在 runtime/window_state.json，由 desktop.py 的
+    # load_window_state / save_window_state 负责），删掉以免 config.json 里的键骗人。
     "app": {
-        "theme": "dark",
-        "language": "zh-CN",
-        "first_run": True,
         "last_seen_version": "",
-        "window": {"width": 1440, "height": 920},
     },
     # 原采集器 app/config.py DEFAULTS（含部署库已有键）
+    # 2026-10-11 清理：default_date / auto_open_browser_on_start / browser_type /
+    # auto_save / task_interval_ms / error_wait_ms 这六个键没有任何读取点
+    # （界面里也没有对应控件），保留只会让 config.json 看起来像有这些开关。
     "collector": {
         "default_collect_count": 4,
-        "default_date": "today",
         "timezone": "Asia/Shanghai",
-        "auto_open_browser_on_start": False,
-        "browser_type": "chromium",
         "browser_headless": True,
         "page_load_timeout_ms": 30000,
         "max_retry": 3,
-        "task_interval_ms": 2000,
-        "error_wait_ms": 3000,
         "account_interval_seconds": 4.0,
         "db_path": "data/tiktok_link_collector.db",
         "export_dir": "exports",
         "links_log_dir": "links_log",
-        "auto_save": True,
         "history_keep_days": 90,
         "notify_sound": True,
+        # 通知卡片外观（2026-10-10 用户反馈：弹窗要出现在**程序界面**右下角）
+        #   notify_card_width / _scale   卡片宽度、字号/内距缩放，保存即生效
+        # 2026-10-11 清理：原先的 notify_in_app / notify_desktop_when_unfocused
+        # 两个开关（前台用卡片 / 后台用桌面浮层）已删除 —— 完成提醒固定画在
+        # 程序界面右下角，桌面浮层不再被任何完成消息使用，留着开关只会误导。
+        "notify_card_width": 420,
+        "notify_card_scale": 1.0,
         "log_level": "INFO",
         "log_dir": "logs",
         "log_keep_days": 30,
@@ -93,12 +96,9 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "keep_frames": False,
         "beep_on_done": True,
         "lan_access": False,
-        "lan_password": "",
-        # 采集器/去水印共用的历史记录条数等
-        "tk_concurrent": 2,
-        "tk_retries": 3,
-        "tk_quality": "hd",
-        "tk_proxy": "",
+        # 2026-10-11 清理：lan_password 早已不再参与任何校验（api.py 的键表里
+        # v4.0.1 就标注了「已移除」），tk_concurrent / tk_retries / tk_quality /
+        # tk_proxy 四个键也没有读取点 —— 一并删除，避免「设了密码就安全」的错觉。
     },
     "hd": {
         "face_enhance": False,
@@ -277,11 +277,6 @@ def update(name: str, values: Optional[Dict[str, Any]] = None, **kw: Any) -> Non
             if sync:
                 raw.setdefault("hd", {}).update(sync)
         _write_json(CONFIG_PATH, raw)
-
-
-def save_all(data: Dict[str, Dict[str, Any]]) -> None:
-    with _lock:
-        _write_json(CONFIG_PATH, {k: dict(data.get(k, {})) for k in SECTIONS})
 
 
 def reset_cache() -> None:

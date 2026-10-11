@@ -14,6 +14,8 @@
 - 发布时间尽力解析并记录（createTime），无法确认的照常采集，publish_date 记空。
 - **替换式记录**：新任务开始时删除本次所有账号的历史作品记录，
   多次采集（含同日多次测试）一律按最后一次的结果替换。
+- **失败回滚（v1.4.3）**：删除前留快照，某账号整体失败且一条未采到时原样写回；
+  首个账号确认登录态失效则提前结束，后面的账号不清旧记录。
 - 每日链接日志同日文件同样按最后一次运行整体替换。
 """
 from __future__ import annotations
@@ -64,6 +66,7 @@ class CollectEngine:
         self._pause.set()               # set = 运行；clear = 暂停（与 Job.pause 同语义）
         self._run_urls: List[str] = []  # 本次运行采集的链接（链接日志替换用）
         self._rate_backoff = 0          # 限流退避等级（0 无退避，随 429 递增）
+        self._abort_reason = ""         # 非空则提前结束（登录态失效熔断，v1.4.3）
 
     # ---- 停止 / 暂停控制 ----
     def request_stop(self) -> None:
@@ -110,7 +113,9 @@ class CollectEngine:
         for acc in accounts:
             self.db.insert_account(acc)
 
-        # 替换式记录：删除本次所有账号的历史作品（多次采集按最后一次替换）
+        # 替换式记录：删除本次账号的历史作品（多次采集按最后一次替换）
+        # 删除动作已下移到主循环里「每个账号开始采集时」执行（见 _clear_account_videos），
+        # 这里只初始化汇总计数器。
         #
         # ⚠️ 这是**不可逆**的一步，且发生在打开浏览器之前 —— 也就是说
         #    「选错了账号范围」会立刻造成数据丢失，而不是等采完才发现。
@@ -118,23 +123,14 @@ class CollectEngine:
         #    84 条作品在这一步被清空（已从备份恢复，见 docs/INCIDENT-20261008.md）。
         #    因此这里额外记录「本次将影响多少条既有记录」，
         #    条数偏大时提高日志级别，便于事后追溯与告警。
+        #
+        # ⚠️ 2026-10-10 起：清除动作**下移到每个账号开始采集时**（见下面主循环），
+        #    让「清除旧记录 + 采回新记录」成为单账号的原子单元。
+        #    旧写法在任务开头一次性清除全部所选账号：中途关窗/停止会让排在后面的
+        #    账号「旧记录已删、新记录未采」（docs/INCIDENT-20261008.md 记录的
+        #    「采集中断留空缺」）。所有账号都采完时，结果与旧写法完全一致。
         removed_total = 0
-        for acc in accounts:
-            try:
-                removed = self.db.delete_videos_for_account(acc.account_id)
-                if removed:
-                    removed_total += removed
-                    self.logger.info("账号 @%s 旧记录已清除：%d 条（替换式记录）",
-                                     acc.username, removed)
-            except Exception as exc:  # noqa: BLE001 —— 清理失败不阻断采集
-                self.logger.warning("账号 @%s 旧记录清除失败: %s", acc.username, exc)
-        if removed_total:
-            self.logger.info("本次替换式记录共清除 %d 条既有作品（%d 个账号）",
-                             removed_total, len(accounts))
-        if removed_total > 50:
-            self.logger.warning(
-                "⚠️ 替换式记录清除了 %d 条既有作品，量级偏大 —— "
-                "请核对本次采集的账号范围是否正确", removed_total)
+        removed_accounts = 0
 
         # ⚠️ 绝不做「跨运行去重」（历史 bug，2026-09-27 修复）
         #   旧实现：dedup = VideoDedup(initial=self.db.load_all_video_ids())
@@ -157,6 +153,10 @@ class CollectEngine:
             "new_videos": 0, "duplicates": 0, "unconfirmed": 0,
             "pinned_skipped": 0,     # 本次跳过的置顶作品总数（非近期，不占名额）
             "pinned_collected": 0,   # 本次额外采集的近期置顶总数（今天/昨天发布）
+            "restored": 0,           # 失败账号回滚写回的旧记录条数（v1.4.3）
+            "login_aborted": False,  # 是否因登录态失效提前结束（后面的账号不清旧记录）
+            "links_written": 0,      # 本次链接日志写入条数
+            "links_kept": 0,         # 本次没采到链接、保留下来的当日链接条数
             "accounts": [],
         }
 
@@ -166,6 +166,18 @@ class CollectEngine:
         self._run_urls = []  # 本次运行采到的全部链接（供链接日志整体替换）
         try:
             for idx, acc in enumerate(accounts):
+                # 登录态失效熔断（v1.4.3）：第一个账号确认登录失效后，后面的
+                # 账号一律跳过 —— 不清旧记录、不开浏览器。否则每个账号都会
+                # 「删得掉、采不回」，把整批账号的历史记录挨个清空。
+                if self._abort_reason:
+                    self.db.upsert_task_account(task_id, acc.account_id, acc.username,
+                                                acc.collect_count, 0, "skipped",
+                                                self._abort_reason)
+                    summary["skipped"] += 1
+                    self._emit(on_progress, idx, total, acc.username, "skipped",
+                               {"aborted": True, "reason": self._abort_reason})
+                    continue
+
                 # 暂停闸门放在账号最前面：保证单个账号的
                 # 「清除旧记录 + 采回新记录」不会被半途打断
                 self._wait_if_paused()
@@ -185,7 +197,23 @@ class CollectEngine:
                         summary["skipped"] += 1
                         continue
 
+                # 替换式记录：只清除**本账号**的旧记录 —— 紧接其后的采集使
+                # 「清除 + 采集」成为原子单元，中断最多影响正在采的这一个账号。
+                # 删除前留一份快照：该账号整体失败且一条都没采到时原样写回，
+                # 避免登录态失效之类的失败把历史记录变成空白（v1.4.3）。
+                removed, snapshot = self._clear_account_videos(acc)
+                if removed:
+                    removed_total += removed
+                    removed_accounts += 1
+
                 result = self._collect_account(acc, task_id, target_date, on_progress, idx, total)
+                if snapshot and result.status == "failed" and result.actual_count == 0:
+                    back = self.db.restore_videos(snapshot)
+                    summary["restored"] += back
+                    note = "（本次未采到任何作品，已回滚保留原记录）"
+                    result.error_reason = (result.error_reason or "") + note
+                    self.logger.warning("账号 @%s 采集失败且无新记录，已回滚 %d 条旧记录",
+                                        acc.username, back)
                 self.logger.info("账号 @%s 完成：status=%s target=%d actual=%d err=%r",
                                  acc.username, result.status, result.target_count,
                                  result.actual_count, result.error_reason)
@@ -208,6 +236,11 @@ class CollectEngine:
                     summary["failed"] += 1
                     if result.diagnostics.get("login_required"):
                         summary["login_required"] += 1
+                        if not self._abort_reason:
+                            self._abort_reason = "登录态失效，任务已停止（未清除旧记录）"
+                            summary["login_aborted"] = True
+                            self.logger.warning(
+                                "登录态失效：本次任务提前结束，后面的账号不会清除旧记录")
 
                 self.db.upsert_task_account(
                     task_id, acc.account_id, acc.username,
@@ -215,10 +248,38 @@ class CollectEngine:
                     result.status, result.error_reason,
                 )
         finally:
+            # 替换式记录汇总（含停止/异常场景）：量级偏大时告警，便于核对账号范围
+            if removed_total:
+                self.logger.info("本次替换式记录共清除 %d 条既有作品（%d 个账号）",
+                                 removed_total, removed_accounts)
+            if removed_total > 50:
+                self.logger.warning(
+                    "⚠️ 替换式记录清除了 %d 条既有作品，量级偏大 —— "
+                    "请核对本次采集的账号范围是否正确", removed_total)
+            if summary.get("restored"):
+                self.logger.info("已回滚保留 %d 条旧记录（采集失败且无新记录的账号）",
+                                 summary["restored"])
+            if summary.get("login_aborted") and summary.get("skipped"):
+                self.logger.warning("登录态失效导致任务提前结束：%d 个账号未采集（旧记录未清除）",
+                                    summary["skipped"])
             # 链接日志：按「最后一次运行」整体替换当日文件（含停止/异常场景）
+            #
+            # ⚠️ 只有**本次真的采到链接**才替换（v1.4.3）：`replace()` 用 "w" 打开，
+            #    传空列表会把当日文件清成 0 字节。登录态失效、全部账号失败、
+            #    刚开跑就被停止 —— 这些情况一条链接都没有，清空等于把上一次
+            #    成功采集的成果删掉，且没有任何提示。
             if self.daily_links is not None:
                 try:
-                    self.daily_links.replace(self._run_urls, day=target_date)
+                    if self._run_urls:
+                        summary["links_written"] = self.daily_links.replace(
+                            self._run_urls, day=target_date)
+                    else:
+                        kept = self.daily_links.load(day=target_date)
+                        summary["links_kept"] = len(kept)
+                        if kept:
+                            self.logger.info(
+                                "本次没有采到任何链接，保留当日链接日志原样（%d 条未清空）",
+                                len(kept))
                 except Exception as exc:  # noqa: BLE001
                     self.logger.warning("每日链接日志替换失败: %s", exc)
 
@@ -232,6 +293,33 @@ class CollectEngine:
         )
         summary["status"] = status
         return summary
+
+    # ---- 替换式记录：单账号清除 ----
+    def _clear_account_videos(self, acc: Account):
+        """清除该账号的既有作品（替换式记录），返回 (清除条数, 回滚快照)。
+
+        ⚠️ 调用点必须紧邻该账号的采集动作（见 run() 主循环）：
+        「清除 + 采集」是同一个原子单元，中断最多影响正在采的那一个账号，
+        而不是让排在后面的账号「旧记录已删、新记录未采」。
+
+        快照在删除**之前**取，供采集整体失败且一条未采到时原样写回（v1.4.3）；
+        删除失败时返回空快照（没删就没有可回滚的东西）。
+        """
+        try:
+            snapshot = self.db.snapshot_videos_for_account(acc.account_id)
+        except Exception as exc:  # noqa: BLE001 —— 快照失败不阻断采集
+            self.logger.warning("账号 @%s 旧记录快照失败（本次不可回滚）: %s",
+                                acc.username, exc)
+            snapshot = []
+        try:
+            removed = self.db.delete_videos_for_account(acc.account_id)
+        except Exception as exc:  # noqa: BLE001 —— 清理失败不阻断采集
+            self.logger.warning("账号 @%s 旧记录清除失败: %s", acc.username, exc)
+            return 0, []
+        if removed:
+            self.logger.info("账号 @%s 旧记录已清除：%d 条（替换式记录，已留 %d 条回滚快照）",
+                             acc.username, removed, len(snapshot))
+        return removed, snapshot
 
     # ---- 单账号采集 ----
     def _collect_account(self, acc, task_id, target_date, on_progress, idx, total):

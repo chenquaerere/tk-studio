@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,25 @@ from .constants import DEFAULT_TIMEZONE
 from .core.date_resolver import DateResolver
 from .db.database import Database
 from .log.daily_links import DailyLinksLog
+
+
+def resolve_log_dir(config) -> "Path":
+    """设置里的日志目录 → 真正可用的绝对路径。
+
+    - 留空 → 默认 `logs/`
+    - 相对路径 → 相对程序根（保持「随身」语义）
+    - 建不出来（盘符不存在 / 无权限）→ 退回默认目录
+
+    为什么允许失败退回而不是报错：一个写坏的路径绝不能挡住程序启动；
+    设置页保存时已经先校验过一次（见 collector_api._ensure_setting_dirs）。
+    """
+    raw = config.get("log_dir")
+    path = paths.resolve(raw) if str(raw or "").strip() else paths.LOGS_DIR
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return paths.LOGS_DIR
+    return path
 
 
 class CollectorServices:
@@ -40,10 +60,13 @@ class CollectorServices:
         # 必须在 playwright 被 import 之前设置（本函数是最早的采集入口）。
         _use_bundled_browsers()
 
-        # 日志先于其它模块初始化
+        # 日志先于其它模块初始化。
+        # 日志目录可在设置页改（log_dir）：留空 → 默认 logs/，相对路径 → 相对程序根；
+        # 目录建不出来时退回默认目录 —— 一个写坏的路径绝不能挡住启动。
+        # 日志目录属于启动期初始化，改完需重启才生效（前端已注明）。
         logging_setup.setup(
             level=str(self.config.get("log_level", "INFO")),
-            log_dir=str(paths.LOGS_DIR),
+            log_dir=str(resolve_log_dir(self.config)),
             keep_days=int(self.config.get("log_keep_days", 30)),
         )
         self.logger = logger or logging_setup.get_logger("collector")
@@ -81,6 +104,40 @@ class CollectorServices:
                 self.auto_backup()
             except Exception:  # noqa: BLE001 —— 备份失败不阻断启动
                 self.logger.warning("启动自动备份失败", exc_info=True)
+
+        # 「历史保留天数」：放在备份之后执行，清理前先有一份当天的库备份；
+        # 只清理过期的**任务记录**，素材库作品不受影响（见 prune_history）。
+        try:
+            self.prune_history()
+        except Exception:  # noqa: BLE001 —— 清理失败不阻断启动
+            self.logger.warning("采集历史清理失败", exc_info=True)
+
+    # ------------------------------------------------------------ 历史保留
+    def prune_history(self, keep_days: Optional[int] = None) -> int:
+        """按「历史保留天数」清理过期的采集任务记录，返回清理条数。
+
+        - `keep_days` 省略时取配置 `history_keep_days`（默认 90 天）；
+        - **0 或负数 = 永久保留**，一条都不删（设置页也按此说明）；
+        - 只动 collect_tasks：素材库作品（videos）通过 ON DELETE SET NULL 保留，
+          未结束/可续采的任务不清理 —— 细节见 Database.delete_tasks_before。
+        """
+        if keep_days is None:
+            keep_days = self.config.get("history_keep_days", 90)
+        try:
+            days = int(keep_days if keep_days is not None else 0)
+        except (TypeError, ValueError):
+            self.logger.warning("history_keep_days=%r 不是有效天数，本次不清理历史", keep_days)
+            return 0
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        removed = int(self.db.delete_tasks_before(cutoff) or 0)
+        if removed:
+            self.logger.info(
+                "采集历史保留 %d 天：已清理 %d 条过期任务记录（素材库作品不受影响）",
+                days, removed,
+            )
+        return removed
 
     # ------------------------------------------------------------ 时区
     def timezone(self) -> str:

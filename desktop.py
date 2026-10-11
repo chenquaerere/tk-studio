@@ -54,6 +54,26 @@ LOG_PATH = ROOT / "app.log"
 
 # --------------------------------------------------------------- 日志
 
+class _ConnectionResetNoiseFilter(logging.Filter):
+    """把 asyncio 的 WinError 10054 / _call_connection_lost 记录降级为 DEBUG。"""
+
+    _SIGNATURES = (
+        "_call_connection_lost",
+        "ConnectionResetError",
+        "WinError 10054",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            text = record.getMessage()
+        except Exception:
+            return True
+        if any(sig in text for sig in self._SIGNATURES):
+            record.levelno = logging.DEBUG
+            record.levelname = "DEBUG"
+        return True
+
+
 def setup_logging() -> None:
     handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
     handler.setFormatter(logging.Formatter(
@@ -64,6 +84,13 @@ def setup_logging() -> None:
     for noisy in ("httpx", "httpcore", "urllib3", "uvicorn.error",
                   "huggingface_hub", "pythonnet", "clr_loader"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # asyncio 的「远程主机强迫关闭连接」噪音过滤。
+    # 2026-10-10：app.log 里 75 条 ERROR 全是同一件事 —— 浏览器（或手机端）
+    # 关掉 keep-alive 连接时，Windows 的 proactor 事件循环在
+    # _ProactorBasePipeTransport._call_connection_lost 里 shutdown 已断开的
+    # socket，抛 ConnectionResetError [WinError 10054]。这不是程序故障，
+    # 却把真正的错误淹没了，所以降级成 DEBUG（仍留在日志里，可查）。
+    logging.getLogger("asyncio").addFilter(_ConnectionResetNoiseFilter())
 
 
 log = logging.getLogger("tk.desktop")
@@ -262,6 +289,15 @@ def do_shutdown(reason: str = "窗口关闭") -> None:
         time.sleep(0.3)
     except Exception:
         pass
+    # 释放采集子系统（Playwright 驱动子进程 + SQLite 连接）。
+    # v1.4.3 修复：collector_api.shutdown() 的 docstring 一直写着「由
+    # desktop.py 调用」，但此前没有任何调用点 —— 关窗后用过的采集/聊天
+    # 会把 Chromium 与驱动进程留在后台。
+    try:
+        from server import services as _services
+        _services.close_collector_runtime()
+    except Exception as e:
+        log.warning(f"释放采集子系统失败：{e}")
     clear_runtime()
     log.info("关停完成")
 

@@ -24,6 +24,7 @@ import requests
 
 from .models import VideoInfo, ContentType, DownloadTask, DownloadStatus
 from .logger import log
+from .urls import short_url
 from .config import config
 from .tikwm import (
     TikwmClient, DEFAULT_PROXY, get_detected_proxy, ensure_proxy_detected,
@@ -105,7 +106,7 @@ class TikTokDownloader:
         # 本地缓存: 相同链接/相同视频 7 天内直接命中, 节省 tikwm 限流配额
         cached = cache_lookup(url)
         if cached is not None:
-            log.info(f"[parse] 缓存命中: {cached.video_id or url[:50]}")
+            log.info(f"[parse] 缓存命中: {cached.video_id or short_url(url)}")
             return cached
         try:
             info = self._get_tikwm().parse(url)
@@ -122,7 +123,7 @@ class TikTokDownloader:
                     _parse_error_map[url] = err or "解析失败（无返回结果）"
             return info
         except Exception as e:
-            log.error(f"[parse] 异常 {url[:60]}: {e}")
+            log.error(f"[parse] 异常 {short_url(url)}: {e}")
             with _parse_error_lock:
                 _parse_error_map[url] = f"{type(e).__name__}: {e}"
             return None
@@ -151,7 +152,7 @@ class TikTokDownloader:
             try:
                 results[i] = self.parse_info(u)
             except Exception as e:
-                log.error(f"[parse_batch] {u[:60]} 异常: {e}")
+                log.error(f"[parse_batch] {short_url(u)} 异常: {e}")
                 results[i] = None
             finally:
                 if on_each:

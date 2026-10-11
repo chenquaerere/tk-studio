@@ -32,7 +32,8 @@ import numpy as np
 from ..config import load
 from ..output import video_output_path
 from ..record import done_info, mark_done
-from ..utils import find_ffmpeg, find_ffprobe, no_window_kwargs, run_quiet
+from ..utils import (PROBE_TIMEOUT, SubprocessTimeout, find_ffmpeg,
+                     find_ffprobe, no_window_kwargs, run_quiet)
 from .image import enhance_image, get_upsampler, load_image_bgr, _shrink_input
 from .models import MODELS
 
@@ -50,6 +51,9 @@ def _short_err(exc) -> str:
     """
     if exc is None:
         return "未知错误"
+    if isinstance(exc, SubprocessTimeout):
+        # 超时没有 stderr，直接把「哪个命令超了多久」当原因
+        return str(exc)[:300]
     err = getattr(exc, "stderr", None)
     if isinstance(err, bytes):
         err = err.decode("utf-8", "replace")
@@ -76,9 +80,18 @@ def probe_video(path: Path) -> dict:
     # ffprobe 输出固定为 UTF-8，Windows 上用 text=True 会按 GBK 解码导致
     # 中文路径 JSON 解析失败，这里显式按 UTF-8 解码。
     # v4.0：补 no_window_kwargs，否则每次探测都会闪一个 cmd 黑窗。
-    raw = subprocess.check_output(
-        cmd, encoding="utf-8", errors="ignore", **no_window_kwargs()
-    )
+    # v1.4.3：补超时。ffprobe 正常几十毫秒就返回，卡住说明文件有问题
+    # （半截文件 / 网络盘掉线），不能让整个任务线程陪着一起挂。
+    try:
+        raw = subprocess.check_output(
+            cmd, encoding="utf-8", errors="ignore", timeout=PROBE_TIMEOUT,
+            **no_window_kwargs()
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"读取视频信息超时（超过 {PROBE_TIMEOUT} 秒）：{path.name} "
+            "可能已损坏或被其它程序占用"
+        ) from exc
     data = json.loads(raw)
     vstream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
     if not vstream:
@@ -148,7 +161,8 @@ def _pick_encoders(cfg: dict) -> list[str]:
     try:
         avail = subprocess.check_output(
             [str(ff), "-hide_banner", "-encoders"],
-            encoding="utf-8", errors="ignore", **no_window_kwargs()
+            encoding="utf-8", errors="ignore", timeout=PROBE_TIMEOUT,
+            **no_window_kwargs()
         )
     except Exception:
         avail = ""
@@ -222,7 +236,7 @@ def _sharp_encode(input_path: Path, target_long: int, out_path: Path, opts: dict
             run_quiet(cmd)
             used = enc
             break
-        except subprocess.CalledProcessError as exc:
+        except (subprocess.CalledProcessError, SubprocessTimeout) as exc:
             last_exc = exc
             out_path.unlink(missing_ok=True)
         except CancelledError:
@@ -433,7 +447,7 @@ def process_video(input_path: Path, model_key: str, outscale: int | None = None,
                 run_quiet(cmd)
                 used = enc
                 break
-            except subprocess.CalledProcessError as exc:
+            except (subprocess.CalledProcessError, SubprocessTimeout) as exc:
                 last_exc = exc
                 out_path.unlink(missing_ok=True)
                 if progress_cb:

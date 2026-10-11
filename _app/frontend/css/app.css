@@ -1388,6 +1388,111 @@ td.time { color: var(--text-2); font-family: var(--mono); font-size: var(--fs-sm
 }
 #toast:not(:empty) { opacity: 1; transform: none; }
 
+/* --------------------------------------------- 应用内通知卡片（界面右下角）
+   2026-10-10：采集完成的通知原来只有"桌面浮层"一条通道（server/notifier.py），
+   窗口在前台时用户会觉得通知跑到程序外面去了。现在窗口在前台就走这里 ——
+   卡片画在程序界面**自己的右下角**，宽度/缩放由设置里的 notify_card_width /
+   notify_card_scale 驱动（app.js 的 Notify.configure() 把 --notify-w /
+   --notify-scale 写到 :root）；切到别的程序时仍由桌面浮层提醒，两条通道互补。 */
+#notify-stack {
+  position: fixed; right: 20px; bottom: 56px; z-index: 420;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;              /* 只有卡片本身接收鼠标事件 */
+}
+.notify-card {
+  pointer-events: auto;
+  position: relative;
+  /* 宽度 = 设置里的「卡片宽度」× 「卡片缩放」，两个数都能在设置页调；
+     缩放同时作用于字号，整张卡等比放大，不会出现「字大了框没大」的挤压。 */
+  width: calc(var(--notify-w, 420px) * var(--notify-scale, 1));
+  max-width: min(calc(var(--notify-w, 420px) * var(--notify-scale, 1)), 92vw);
+  box-sizing: border-box;
+  padding: 12px 14px 14px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: calc(var(--fs-md) * var(--notify-scale, 1));
+  line-height: var(--lh-tight);
+  cursor: pointer;
+  overflow: hidden;
+  animation: notify-in var(--dur) var(--ease) both;
+}
+.notify-card[data-kind="ok"]    { border-left-color: var(--success); }
+.notify-card[data-kind="warn"]  { border-left-color: var(--warning); }
+.notify-card[data-kind="error"] { border-left-color: var(--danger-2); }
+.notify-out { animation: notify-out 180ms var(--ease) both; }
+
+.notify-head { display: flex; align-items: center; gap: 8px; }
+.notify-icon { flex: none; width: 1.15em; text-align: center; }
+.notify-card[data-kind="ok"] .notify-icon    { color: var(--success); }
+.notify-card[data-kind="warn"] .notify-icon  { color: var(--warning); }
+.notify-card[data-kind="error"] .notify-icon { color: var(--danger-2); }
+.notify-title { flex: 1; min-width: 0; font-weight: 650; }
+.notify-close {
+  flex: none; width: 20px; height: 20px; padding: 0; line-height: 1;
+  border: none; border-radius: 4px; cursor: pointer;
+  background: none; color: var(--text-2);
+  font-size: calc(15px * var(--notify-scale, 1));
+}
+.notify-close:hover { background: var(--surface-3); color: var(--text); }
+.notify-msg {
+  margin-top: 6px; color: var(--text-2);
+  word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notify-foot { margin-top: 10px; display: flex; justify-content: flex-end; }
+.notify-ok {
+  padding: 4px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-3); color: var(--text);
+  font-size: calc(var(--fs-sm) * var(--notify-scale, 1));
+}
+.notify-ok:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 底部倒计时进度条；--notify-from 让"悬停暂停后继续"从剩余比例接着走 */
+.notify-progress {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--surface-3);
+}
+.notify-progress > i {
+  display: block; height: 100%; width: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  animation: notify-countdown linear both;
+}
+.notify-paused .notify-progress > i { animation-play-state: paused; }
+/* 常驻卡片（timeout = 0：窗口不在前台时用）：没有倒计时，一直留着等用户回来关 */
+.notify-sticky .notify-progress { display: none; }
+.notify-card[data-kind="ok"] .notify-progress > i    { background: var(--success); }
+.notify-card[data-kind="warn"] .notify-progress > i  { background: var(--warning); }
+.notify-card[data-kind="error"] .notify-progress > i { background: var(--danger-2); }
+
+@keyframes notify-in {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes notify-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(16px); }
+}
+@keyframes notify-countdown {
+  from { transform: scaleX(var(--notify-from, 1)); }
+  to   { transform: scaleX(0); }
+}
+
+/* 窄窗口：卡片撑满可视宽度，别顶出屏幕 */
+@media (max-width: 560px) {
+  #notify-stack { left: 12px; right: 12px; align-items: stretch; }
+  .notify-card { width: auto; max-width: none; }
+}
+/* 卡片在的时候把状态栏胶囊让开，避免两层提示叠在一起 */
+body:has(#notify-stack:not(:empty)) #toast { opacity: 0; }
+
 /* ---------------------------------------------------------- 滚动条 */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -266,10 +266,17 @@ class Job:
             elif key == "notify":
                 handled = True
                 level = "info"
+                message = ""
                 if isinstance(value, tuple) and value:
                     raw = str(value[0])
                     level = {"ok": "ok", "warn": "warn", "error": "error"}.get(raw, "info")
-                self.emit(EventKind.NOTIFY, level=level)
+                    # 元组第二项是要给用户看的文字（v4.0.2 之前被丢掉，
+                    # 于是完成提示永远只有一句光秃秃的「完成」）。
+                    if len(value) > 1 and value[1]:
+                        message = str(value[1])
+                elif value:
+                    message = str(value)
+                self.emit(EventKind.NOTIFY, level=level, message=message)
                 handled = True
             # stage_done / stage_total 一起算阶段进度
             if key in ("stage_done", "stage_total"):

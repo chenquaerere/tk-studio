@@ -981,6 +981,17 @@
               <label class="chk"><input type="checkbox" id="cset-headless" /> 无头浏览器（后台运行）</label>
               <label class="chk"><input type="checkbox" id="cset-notify" /> 采集完成提示音</label>
             </div>
+            <!-- 通知卡片的大小（2026-10-10/11 用户反馈：弹窗要出现在**程序界面**
+                 右下角）。通道只有一个 —— 界面右下角的卡片，没有开关，
+                 所以这里只留尺寸；桌面浮层已不再被任何完成消息使用。 -->
+            <div class="row">
+              <label class="field">卡片宽度 (px)
+                <input type="number" id="cset-notify-width" min="280" max="720" step="10" style="width:100px;min-width:100px" />
+              </label>
+              <label class="field">卡片缩放
+                <input type="number" id="cset-notify-scale" min="0.8" max="1.6" step="0.05" style="width:100px;min-width:100px" />
+              </label>
+            </div>
             <div class="row">
               <label class="field">页面加载超时 (ms)<input type="number" id="cset-timeout" style="width:120px;min-width:120px" /></label>
               <label class="field">最大重试次数<input type="number" id="cset-retry" style="width:100px;min-width:100px" /></label>
@@ -991,16 +1002,26 @@
                 <input type="number" id="cset-chat-count" min="1" max="200" style="width:110px;min-width:110px" />
               </label>
               <label class="field">历史保留天数
-                <input type="number" id="cset-histkeep" min="1" max="3650" style="width:110px;min-width:110px" />
+                <input type="number" id="cset-histkeep" min="0" max="3650" style="width:110px;min-width:110px" />
               </label>
               <label class="field">日志保留天数
                 <input type="number" id="cset-logkeep" min="1" max="3650" style="width:110px;min-width:110px" />
               </label>
               <label class="chk"><input type="checkbox" id="cset-autoupdate" /> 启动时检查更新</label>
             </div>
+            <div class="muted">
+              历史保留天数在<strong>保存时和每次启动时</strong>清理过期的采集任务记录（填 0 = 永久保留）；
+              素材库里的作品不会被删除，未结束/可续采的任务也不会被清理。
+            </div>
             <div class="row">
               <label class="field grow">导出目录<input type="text" id="cset-export-dir" placeholder="exports（相对程序根，或绝对路径）" /></label>
-              <label class="field grow">日志目录<input type="text" id="cset-log-dir" placeholder="logs" /></label>
+              <label class="field grow">日志目录<input type="text" id="cset-log-dir" placeholder="logs（相对程序根，或绝对路径）" /></label>
+            </div>
+            <div class="muted">
+              导出目录<strong>立即生效</strong>：新导出的文件写在设置的位置，
+              「下载导出文件」也只允许该目录下的文件；日志目录<strong>重启后生效</strong>。
+              两者都支持相对程序根的路径或绝对路径，目录不存在会自动创建；
+              请填专用目录，不要指向程序根或系统目录。
             </div>
             <div class="row">
               <label class="field grow">GitHub 仓库 (owner/repo)

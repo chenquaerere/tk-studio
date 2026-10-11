@@ -273,11 +273,15 @@ def get_face_enhancer():
 
 def load_image_bgr(path: Path) -> np.ndarray:
     register_heif()
-    im = Image.open(path)
-    im = ImageOps.exif_transpose(im)
-    if im.mode != "RGB":
-        im = im.convert("RGB")
-    return np.array(im)[:, :, ::-1].copy()  # RGB -> BGR (cv2 / Real-ESRGAN convention)
+    # 用 with + load() 及时释放文件句柄：Windows 上句柄没关会让「处理完移动/改名
+    # 原文件」失败，而原来的写法要等 GC 才关闭（大图连续处理时容易撞上）。
+    with Image.open(path) as f:
+        im = ImageOps.exif_transpose(f)
+        im.load()  # 先把像素读进内存，句柄关闭后仍可继续用
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        arr = np.array(im)[:, :, ::-1].copy()  # RGB -> BGR (cv2 / Real-ESRGAN convention)
+    return arr
 
 
 def save_image_bgr(path: Path, img_bgr: np.ndarray, quality: int = 95) -> None:
@@ -411,7 +415,7 @@ def enhance_image(img_bgr: np.ndarray, model_key: str, outscale: int | None = No
             raise
     if face_enhance:
         enh = get_face_enhancer()
-        face_work = int(load().get("face_work_side", 2048) or 2048)
+        face_work = int(load().get("face_work_side", 4096) or 4096)
         output = _enhance_faces_fast(output, enh, face_work)
     if max_side > 0:
         output = _limit_output(output, min(max_side, src_long * outscale))

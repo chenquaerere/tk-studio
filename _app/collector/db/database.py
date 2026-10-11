@@ -454,6 +454,26 @@ class Database:
             self._execute(f"UPDATE collect_tasks SET {', '.join(sets)} WHERE task_id = ?", tuple(params))
             self._maybe_commit()
 
+    def delete_tasks_before(self, cutoff: str) -> int:
+        """清理 created_at 早于 cutoff 的采集任务记录，返回被清理的任务数。
+
+        ⚠️ 只清理 collect_tasks 这一张表里的**任务记录**：
+          - `videos` 通过 ON DELETE SET NULL 保留（first_task_id 置空），
+            用户已采集的作品绝不会被删掉；
+          - `task_accounts` / `collect_logs` 是任务自身的从属记录，随任务级联清理；
+          - 时间未知（created_at 为空）或还没结束（pending/running/stopped，
+            与「可续采」判定同源）的任务一律不清理 —— 宁可留着，不猜着删。
+        """
+        with self._lock:
+            cur = self._execute(
+                "DELETE FROM collect_tasks "
+                "WHERE created_at IS NOT NULL AND created_at <> '' AND created_at < ? "
+                "AND status NOT IN ('pending', 'running', 'stopped')",
+                (cutoff,),
+            )
+            self._maybe_commit()
+            return cur.rowcount
+
     def next_task_id(self, target_date: str) -> str:
         """生成 TASK-YYYYMMDD-NNN（当日序号递增）。"""
         prefix = "TASK-" + target_date.replace("-", "")
@@ -509,6 +529,41 @@ class Database:
             cur = self._execute("DELETE FROM videos WHERE account_id = ?", (account_id,))
             self._maybe_commit()
             return cur.rowcount
+
+    # ---- 替换式记录的「后悔药」（v1.4.3）----
+    # 替换式记录是「先删旧账、再采新账」。登录态失效时每个账号都会
+    # 「删得掉、采不回」：旧记录凭空消失，新记录一条没有。下面两个方法
+    # 让引擎在删除前留一份原始字段快照，账号整体失败时原样写回。
+    _VIDEO_COLUMNS = ("video_id", "account_id", "username", "video_url",
+                      "publish_time", "publish_date", "first_collect_time",
+                      "first_task_id", "status")
+
+    def snapshot_videos_for_account(self, account_id: str) -> List[dict]:
+        """取出某账号作品的全部原始字段（供删除后回滚）。"""
+        cols = ", ".join(self._VIDEO_COLUMNS)
+        rows = self.query(
+            f"SELECT {cols} FROM videos WHERE account_id = ?", (account_id,))
+        return [{c: r[c] for c in self._VIDEO_COLUMNS} for r in rows]
+
+    def restore_videos(self, rows: List[dict]) -> int:
+        """把快照原样写回（INSERT OR IGNORE：同 id 的新记录优先，不会重复）。
+
+        返回真正写回的条数。video_url/first_task_id 允许为空，与 insert_video 一致。
+        """
+        if not rows:
+            return 0
+        cols = ", ".join(self._VIDEO_COLUMNS)
+        marks = ",".join("?" * len(self._VIDEO_COLUMNS))
+        written = 0
+        with self._lock:
+            for row in rows:
+                cur = self._execute(
+                    f"INSERT OR IGNORE INTO videos({cols}) VALUES({marks})",
+                    tuple(row.get(c) for c in self._VIDEO_COLUMNS),
+                )
+                written += cur.rowcount
+            self._maybe_commit()
+        return written
 
     def load_all_video_ids(self) -> List[str]:
         """供任务开始前初始化去重器（每日重复执行 + 增量去重）。"""

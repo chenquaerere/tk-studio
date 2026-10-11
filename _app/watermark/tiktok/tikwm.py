@@ -26,6 +26,7 @@ import requests
 
 from .models import VideoInfo, ContentType
 from .logger import log
+from .urls import short_url
 from .parse_cache import is_stale_status
 
 # 从异常文本里兜底提取 HTTP 状态码（requests 的 str(HTTPError) 形如 "403 Client Error..."）
@@ -228,6 +229,26 @@ def _throttle():
             _RATE_COND.wait(timeout=wait)
 
 
+def _mark_request_done() -> None:
+    """请求结束后再压一次时间槽（配合 _throttle 使用）。
+
+    `_throttle()` 是「发送前预约时间槽」，挡不住「预约了但发送被代理/握手
+    拖慢」的情况：另一个线程按预约时间发出请求，服务端却在同一秒内收到
+    两个请求，于是照样吃 `Free Api Limit: 1 request/second`。
+    2026-10-10 的日志里真出现过：上一次请求 22.658 秒返回，下一次
+    23.004 秒就被限流（只隔 0.35 秒）。
+
+    请求返回后再更新一次时间槽，等价于「下一次请求与本次**完成**至少间隔
+    _MIN_INTERVAL」，比只按发送时刻排队更严格，代价只是整体慢一点点。
+    """
+    global _LAST_REQUEST_AT
+    with _RATE_COND:
+        now = time.monotonic()
+        if now > _LAST_REQUEST_AT:
+            _LAST_REQUEST_AT = now
+        _RATE_COND.notify_all()
+
+
 def _is_rate_limit_error(msg: str) -> bool:
     """Detect tikwm rate-limit errors; they need a longer retry wait."""
     m = (msg or "").lower()
@@ -388,7 +409,7 @@ def resolve_short_url(url: str, proxies: Optional[Dict[str, str]] = None,
             if resp.url:
                 resolved = resp.url
     except Exception as e:
-        log.debug(f"[tikwm] short link resolve failed, fallback: {url[:60]} - {e}")
+        log.debug(f"[tikwm] short link resolve failed, fallback: {short_url(url)} - {e}")
     with _short_link_lock:
         _short_link_cache[url] = (time.monotonic() + _SHORT_LINK_TTL, resolved)
     return resolved
@@ -461,7 +482,7 @@ class TikwmClient:
         # 抖音: 转独立引擎 (直连, 不走海外代理)
         if _is_douyin_url(url):
             from .douyin import DouyinClient
-            log.info(f"[tikwm] 抖音链接转 DouyinClient: {url[:60]}")
+            log.info(f"[tikwm] 抖音链接转 DouyinClient: {short_url(url)}")
             try:
                 return DouyinClient(timeout=self.timeout,
                                     max_retries=max(2, self.max_retries)).parse(url)
@@ -472,19 +493,22 @@ class TikwmClient:
         # Resolve short links locally (cached) to improve parse success rate.
         canonical = resolve_short_url(url, proxies=self._proxies)
         if canonical != url:
-            log.info(f"[tikwm] short link: {url[:60]} -> {canonical[:60]}")
+            log.info(f"[tikwm] short link: {short_url(url)} -> {short_url(canonical)}")
             url = canonical
 
         last_err = ""
         for attempt in range(1, self.max_retries + 1):
             try:
                 _throttle()
-                resp = self.session.post(
-                    TIKWM_API,
-                    data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
-                    proxies=self._proxies,
-                    timeout=self.timeout,
-                )
+                try:
+                    resp = self.session.post(
+                        TIKWM_API,
+                        data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
+                        proxies=self._proxies,
+                        timeout=self.timeout,
+                    )
+                finally:
+                    _mark_request_done()
                 if resp.status_code != 200:
                     raise RuntimeError(
                         f"HTTP {resp.status_code}: {resp.text[:120]}"
@@ -502,7 +526,7 @@ class TikwmClient:
                 last_err = f"{type(e).__name__}: {e}"
                 log.warning(
                     f"[tikwm] 解析失败 ({attempt}/{self.max_retries}) "
-                    f"{url[:60]}  -> {last_err}"
+                    f"{short_url(url)}  -> {last_err}"
                 )
                 if attempt < self.max_retries:
                     # Rate-limit errors need a longer wait before retry.
@@ -518,12 +542,15 @@ class TikwmClient:
             log.info(f"[tikwm] 代理路径失败({last_err[:70]}), 尝试直连兜底")
             try:
                 _throttle()
-                resp = self.session.post(
-                    TIKWM_API,
-                    data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
-                    proxies={},
-                    timeout=self.timeout,
-                )
+                try:
+                    resp = self.session.post(
+                        TIKWM_API,
+                        data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
+                        proxies={},
+                        timeout=self.timeout,
+                    )
+                finally:
+                    _mark_request_done()
                 if resp.status_code == 200:
                     j = resp.json()
                     if j.get("code") == 0 and j.get("data"):
@@ -538,7 +565,7 @@ class TikwmClient:
                 log.warning(last_err)
 
         _set_last_error(last_err)
-        log.error(f"[tikwm] 解析放弃 {url[:60]}: {last_err}")
+        log.error(f"[tikwm] 解析放弃 {short_url(url)}: {last_err}")
         return None
 
     def _douyin_post_parse(self, url: str) -> Optional[VideoInfo]:
@@ -550,12 +577,15 @@ class TikwmClient:
         for attempt in range(1, max(1, self.max_retries) + 1):
             try:
                 _throttle()
-                resp = self.session.post(
-                    TIKWM_API,
-                    data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
-                    proxies=self._proxies,
-                    timeout=self.timeout,
-                )
+                try:
+                    resp = self.session.post(
+                        TIKWM_API,
+                        data={"url": url, "hd": "1"} if self.hd_mode else {"url": url},
+                        proxies=self._proxies,
+                        timeout=self.timeout,
+                    )
+                finally:
+                    _mark_request_done()
                 if resp.status_code != 200:
                     raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:120]}")
                 j = resp.json()
@@ -718,7 +748,7 @@ class TikwmClient:
             return saved_paths[0]  # 主路径: 第一张图
 
         raise RuntimeError(
-            f"无可下载资源: type={info.content_type.value} url={info.url[:60]}"
+            f"无可下载资源: type={info.content_type.value} url={short_url(info.url)}"
         )
 
     # ====================================================================

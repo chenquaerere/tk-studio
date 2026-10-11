@@ -18,6 +18,14 @@ public class TrayApp : Form
     private bool nativeMode = false;
     private string url = "http://127.0.0.1:7860";
     private System.Windows.Forms.Timer watch;
+    private DateTime childStartedAt = DateTime.MinValue;
+    private bool childRan = false;
+    // 这些退出码表示"进程被正常结束"，不是启动失败。历史：用户正常关窗后
+    // launcher.log 里全是「程序启动失败（退出码 1073807364）」，而同一时刻
+    // app.log 记的是正常关停。1073807364 = 0x40010004 DBG_TERMINATE_PROCESS，
+    // 是 Windows 在进程被结束（Job 对象/taskkill）时留下的退出码。
+    private const int ExitDbgTerminate = 1073807364;      // 0x40010004
+    private const int ExitControlC = -1073741510;         // 0xC000013A
 
     [STAThread]
     static int Main()
@@ -140,6 +148,34 @@ public class TrayApp : Form
         }
     }
 
+    /// <summary>
+    /// 这个退出码算不算"正常结束"。
+    /// 2026-10-10：以前只要 code != 0 就报「程序启动失败」，于是用户正常关窗
+    /// （Job 对象结束子进程，0x40010004）也会看到红色错误框。判定标准改为：
+    /// ① 明确表示"被结束"的退出码；② 子进程已经稳定运行过（childRan）。
+    /// 真正的启动失败会在几秒内带非零码退出，那时 childRan 仍为 false。
+    /// </summary>
+    private bool IsNormalExit(int code)
+    {
+        if (code == 0) return true;
+        if (code == ExitDbgTerminate || code == ExitControlC) return true;
+        return childRan;
+    }
+
+    /// <summary>只写 launcher.log，不弹窗（用于"不算故障"的记录）。</summary>
+    private static void LogNote(string message)
+    {
+        string dir = ExeDirStatic();
+        if (dir == null) return;
+        try
+        {
+            File.AppendAllText(Path.Combine(dir, "launcher.log"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + "\r\n\r\n",
+                new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
     /// <summary>把错误同时写到 launcher.log 并弹出提示。</summary>
     private static void SayError(string message)
     {
@@ -183,6 +219,7 @@ public class TrayApp : Form
         // 全项目已无任何代码读取它们 —— 直接去掉，改成完整继承父进程环境。
         CreateKillOnCloseJob();
         child = Process.Start(psi);
+        childStartedAt = DateTime.Now;
         AssignChildToJob();
 
         watch = new System.Windows.Forms.Timer();
@@ -203,13 +240,27 @@ public class TrayApp : Form
                 // 原来这里直接 Application.Exit()，表现为「双击没反应」。
                 int code = -1;
                 try { code = child.ExitCode; } catch { }
-                if (code != 0)
+                if (code != 0 && !IsNormalExit(code))
                 {
                     SayError("程序启动失败（退出码 " + code + "）。\r\n" +
                         "请查看日志：" + Path.Combine(exeDir, "app.log"));
                     return;
                 }
+                if (code != 0)
+                {
+                    // 跑起来之后再退出的非零码：只记日志，不再弹「启动失败」。
+                    // 2026-10-10：用户点关窗后 Job 对象结束子进程，退出码是
+                    // 0x40010004，以前会被误报成启动失败。
+                    LogNote("程序已退出（退出码 " + code + "，按正常退出处理）。");
+                }
                 Application.Exit();
+            }
+            else if (!childRan &&
+                     (DateTime.Now - childStartedAt).TotalSeconds >= 15)
+            {
+                // 连续存活 15 秒即视为"确实启动起来了"：真正的启动失败
+                // （缺依赖、端口被占、环境损坏）都在几秒内退出。
+                childRan = true;
             }
         }
         catch (Exception ex)

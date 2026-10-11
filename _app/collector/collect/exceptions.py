@@ -11,11 +11,3 @@ class LoginRequired(CollectorError):
 
 class RateLimited(CollectorError):
     """触发 TikTok 限流（HTTP 429 / 请求过于频繁），应退避等待后重试。"""
-
-
-class PageLoadFailed(CollectorError):
-    """页面加载失败。"""
-
-
-class ParseFailed(CollectorError):
-    """页面解析失败（结构变化或数据缺失）。"""

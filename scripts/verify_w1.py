@@ -33,6 +33,15 @@ for _p in (str(APP_DIR), str(ROOT)):
 RESULTS: list[tuple[bool, str]] = []
 
 
+# 中文 Windows 的 cmd 默认代码页是 GBK：脚本最后一行打印 ✅/❌ 会抛
+# UnicodeEncodeError —— 明明所有断言都通过了，退出码却是 1（看起来像验收失败）。
+# 这里自己把输出切成 UTF-8，任何控制台都能把结果打印完。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 def check(ok: bool, label: str, extra: str = "") -> bool:
     RESULTS.append((bool(ok), label + (f"  {extra}" if extra else "")))
     return bool(ok)
@@ -158,7 +167,9 @@ def main() -> int:
           "采集器运行时键保留", f"chat_last_count={col.get('chat_last_count')}")
     check(str(col.get("update_repo", "")).startswith("chenquaerere/"),
           "采集器仓库地址保留", str(col.get("update_repo")))
-    check(len(col) >= 28, "collector 分区键数完整", f"{len(col)} 个键")
+    check(all(k in col for k in LEGACY_COLLECTOR),
+          "旧采集器配置的每个键都并进了 collector 分区",
+          f"{len(col)} 个键 / 旧配置 {len(LEGACY_COLLECTOR)} 个")
 
     # ---------- D. 兼容性 ----------
     print("\n[D] 去水印内核兼容性")

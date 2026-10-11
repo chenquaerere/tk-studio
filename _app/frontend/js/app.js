@@ -12,8 +12,11 @@
     if (text != null) n.textContent = text;
     return n;
   };
+  // 转义必须连引号一起处理：esc() 同时用在文本位置和 value="${...}" 属性位置，
+  // 昵称/地区里有一个 `"` 就能把属性撑破（表单显示不全，甚至注入 onfocus 之类的属性）。
   const esc = (v) => String(v == null ? "" : v)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const fmtSize = (n) => {
     n = Number(n) || 0;
     if (n < 1024) return n + " B";
@@ -49,6 +52,167 @@
     clearTimeout(toast._t);
     toast._t = setTimeout(() => { t.textContent = ""; }, ms);
   }
+
+  // -------------------------------------------------------- 应用内通知卡片
+  /**
+   * 界面右下角的通知卡片栈（2026-10-10）。
+   *
+   * 背景：采集完成的提醒原来一律弹**桌面**浮层（server/notifier.py），
+   * 用户反馈"通知跑到程序外面去了"。现在**只有这里一条通道**：
+   * 采集链接 / 去水印 / 高清修复的完成消息都画成程序界面右下角的卡片
+   * （宽度/缩放由设置驱动：notify_card_width / notify_card_scale）；
+   * 窗口不在前台时卡片常驻，不再弹桌面浮层。
+   * 卡片样式全部在 css/app.css（#notify-stack / .notify-card）。
+   */
+  const Notify = (() => {
+    const ICONS = { info: "ℹ", ok: "✔", warn: "⚠", error: "✖" };
+    const MAX_CARDS = 3;            // 再多就把最老的挤掉，避免糊住半个屏幕
+    const DEFAULT_TIMEOUT = 9000;
+    let host = null;
+    let onKey = null;
+
+    function stack() {
+      if (host && host.isConnected) return host;
+      host = document.createElement("div");
+      host.id = "notify-stack";
+      host.setAttribute("role", "status");
+      host.setAttribute("aria-live", "polite");
+      document.body.appendChild(host);
+      return host;
+    }
+
+    function unbindKey() {
+      if (onKey) {
+        document.removeEventListener("keydown", onKey, true);
+        onKey = null;
+      }
+    }
+
+    function close(card) {
+      if (!card || card.dataset.closing) return;
+      card.dataset.closing = "1";
+      clearTimeout(Number(card.dataset.timer || 0));
+      card.classList.add("notify-out");
+      setTimeout(() => {
+        card.remove();
+        if (host && !host.children.length) unbindKey();
+      }, 180);
+    }
+
+    /** 进度条：从 from（0~1）走完 ms。改 `--notify-from` 让暂停后接着走。 */
+    function runBar(card, from, ms) {
+      const bar = card.querySelector(".notify-progress > i");
+      if (!bar) return;
+      bar.style.setProperty("--notify-from", String(Math.max(0, Math.min(1, from))));
+      bar.style.animation = "none";     // 重置动画，否则不会重新播放
+      void bar.offsetWidth;
+      bar.style.animation = "";
+      bar.style.animationDuration = ms + "ms";
+    }
+
+    function schedule(card, ms, from = 1) {
+      card.dataset.total = String(card.dataset.total || ms);
+      card.dataset.left = String(ms);
+      card.dataset.startedAt = String(Date.now());
+      clearTimeout(Number(card.dataset.timer || 0));
+      card.dataset.timer = String(setTimeout(() => close(card), ms));
+      runBar(card, from, ms);
+    }
+
+    function pause(card) {
+      if (card.dataset.closing) return;
+      if (card.classList.contains("notify-sticky")) return;   // 常驻卡片没有倒计时
+      const total = Number(card.dataset.total || DEFAULT_TIMEOUT);
+      const used = Date.now() - Number(card.dataset.startedAt || Date.now());
+      const left = Math.max(400, Number(card.dataset.left || total) - used);
+      card.dataset.left = String(left);
+      clearTimeout(Number(card.dataset.timer || 0));
+      card.classList.add("notify-paused");   // CSS 暂停进度条动画
+    }
+
+    function resume(card) {
+      if (card.dataset.closing) return;
+      if (card.classList.contains("notify-sticky")) return;   // 别把常驻卡片叫醒成 9 秒卡
+      card.classList.remove("notify-paused");
+      const total = Math.max(1, Number(card.dataset.total || DEFAULT_TIMEOUT));
+      const left = Math.max(400, Number(card.dataset.left || total));
+      schedule(card, left, left / total);
+    }
+
+    function show({ title, message, kind = "info", timeout = DEFAULT_TIMEOUT } = {}) {
+      const k = ICONS[kind] ? kind : "info";
+      const box = stack();
+      // 卡片出现时把旧的单行提示条清空：同一件事不再在两处各说一遍。
+      // 样式里 #toast 也会给卡片让位，这里顺手清内容，免得卡片退场后
+      // 那句话又冒出来闪一下。
+      const staleToast = $("toast");
+      if (staleToast) staleToast.textContent = "";
+      const card = el("div", "notify-card");
+      card.dataset.kind = k;
+
+      const head = el("div", "notify-head");
+      const icon = el("span", "notify-icon", ICONS[k]);
+      const ttl = el("span", "notify-title", title || "通知");
+      const x = el("button", "notify-close", "×");
+      x.type = "button";
+      x.title = "关闭";
+      x.setAttribute("aria-label", "关闭通知");
+      head.append(icon, ttl, x);
+
+      const msg = el("div", "notify-msg", message || "");
+      const foot = el("div", "notify-foot");
+      const okBtn = el("button", "notify-ok", "知道了");
+      okBtn.type = "button";
+      foot.appendChild(okBtn);
+
+      const prog = el("div", "notify-progress");
+      prog.appendChild(document.createElement("i"));
+
+      card.append(head, msg, foot, prog);
+      box.appendChild(card);
+      // 超出上限：同步摘掉最老的（close() 有退场动画，会让计数滞后）
+      while (box.children.length > MAX_CARDS) {
+        const old = box.firstElementChild;
+        clearTimeout(Number(old.dataset.timer || 0));
+        old.remove();
+      }
+
+      x.addEventListener("click", (ev) => { ev.stopPropagation(); close(card); });
+      okBtn.addEventListener("click", (ev) => { ev.stopPropagation(); close(card); });
+      card.addEventListener("click", () => close(card));
+      card.addEventListener("mouseenter", () => pause(card));
+      card.addEventListener("mouseleave", () => resume(card));
+
+      if (!onKey) {
+        onKey = (ev) => {
+          if (ev.key !== "Escape") return;
+          const last = host && host.lastElementChild;
+          if (!last) return;
+          ev.stopPropagation();
+          close(last);
+        };
+        document.addEventListener("keydown", onKey, true);
+      }
+      // timeout === 0：常驻卡片，不自动消失（窗口不在前台时用，等用户回来看见）
+      if (Number(timeout) === 0) card.classList.add("notify-sticky");
+      else schedule(card, Math.max(1200, Number(timeout) || DEFAULT_TIMEOUT));
+      return card;
+    }
+
+    /** 应用卡片外观（来自采集 meta：notify_card_width / notify_card_scale）。 */
+    function configure(meta) {
+      const m = meta || {};
+      const w = Number(m.notify_card_width);
+      const s = Number(m.notify_card_scale);
+      const root = document.documentElement;
+      root.style.setProperty("--notify-w",
+        (Number.isFinite(w) && w >= 200 ? Math.round(w) : 420) + "px");
+      root.style.setProperty("--notify-scale",
+        String(Number.isFinite(s) && s > 0 ? s : 1));
+    }
+
+    return { show, close, configure };
+  })();
 
   function setDisabled(ids, busy) {
     ids.forEach((id) => { const n = $(id); if (n) n.disabled = busy; });
@@ -206,9 +370,11 @@
     es.addEventListener("notify", (e) => {
       let ev = {};
       try { ev = JSON.parse(e.data); } catch { return; }
-      if (ev.level === "ok") toast("✅ " + (ev.message || "完成"));
-      else if (ev.level === "warn") toast("⚠ " + (ev.message || "有失败项"));
-      else if (ev.level === "error") toast("✕ " + (ev.message || "失败"));
+      const kind = ["ok", "warn", "error"].includes(ev.level) ? ev.level : "info";
+      const msg = ev.message || (kind === "error" ? "任务失败" : "任务完成");
+      // 没有正文的纯 info 事件（旧后端）不打扰用户。
+      if (!ev.message && kind === "info") return;
+      notifyCompletion(msg, kind);
     });
 
     const finish = (kind) => (e) => {
@@ -266,10 +432,59 @@
   }
   setInterval(refreshTaskBar, 2500);
 
+  // -------------------------------------- 任务完成的统一通知（唯一出口）
+  // 水印侧（高清修复 / 下载 / 处理）的完成消息由后端通过任务的 notify 字段
+  // 以 SSE 事件（jobs.py 的 NOTIFY）送出，采集侧走 bus.notify 轮询。
+  // 2026-10-11 用户第三次反馈：「还是在桌面右下角弹」—— 只要按「窗口有没有焦点」
+  // 分流，pywebview 下 document.hasFocus() 经常是 false，最后几乎总会走桌面浮层；
+  // 而且采集页和去水印页各有一套判断，看着就像两个不一样的弹窗。
+  // 现在只有一条通道：三个板块（采集链接 / 去水印 / 高清修复）全部调用
+  // notifyCompletion()，卡片画在**程序界面右下角**（css/app.css 的 #notify-stack），
+  // 桌面浮层不再被任何完成消息使用。没打标的消息（进度类）仍是 toast。
+  let beepOnDone = true;
+  async function syncBeepOnDone() {
+    try {
+      const d = await api("/api/settings");
+      const raw = (d && d.raw) || {};
+      if (typeof raw.beep_on_done === "boolean") beepOnDone = raw.beep_on_done;
+    } catch { /* 读取失败：保持默认开启 */ }
+  }
+  syncBeepOnDone();
+
+  /** 只播提示音，不弹窗（desktop:false 明确告诉后端：别弹桌面浮层）。 */
+  function beepOnce() {
+    api("/api/system/notify", {
+      method: "POST",
+      body: { title: "", message: "", kind: "info", timeout_ms: 0,
+              sound: true, desktop: false },
+    }).catch(() => { /* 提示音失败不影响结果 */ });
+  }
+
+  /** 任务完成类消息的**唯一**出口：程序界面右下角卡片（+ 可选提示音）。
+   *
+   *  窗口在前台 → 卡片 9 秒后自己消失；
+   *  窗口不在前台 / 最小化 → 卡片常驻，等用户回来看见后点「知道了」或 × 关掉。
+   *  任何情况下都不再弹桌面浮层（用户 2026-10-11 明确要求）。
+   *  opts.sound：本次是否出声（采集侧用 notify_sound，水印侧用 beep_on_done）。 */
+  function notifyCompletion(msg, kind = "info", title = "任务完成", opts = {}) {
+    if (!msg) return;
+    const seen = !document.hidden && document.hasFocus();
+    Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });
+    const sound = opts.sound === undefined ? beepOnDone : !!opts.sound;
+    if (sound) beepOnce();
+  }
+
+  function notifyItem(n) {
+    const msg = (n && n.message) || "";
+    if (!msg) return;
+    if (!n.card) { toast(msg, 4200); return; }
+    notifyCompletion(msg, n.level || "info");
+  }
+
   setInterval(async () => {
     try {
       const { items } = await api("/api/notifications");
-      (items || []).forEach((n) => toast(n.message, 4200));
+      (items || []).forEach(notifyItem);
     } catch { /* 忽略 */ }
   }, 2800);
 
@@ -309,6 +524,15 @@
       "<tr>" + (r || []).map((c) => `<td>${esc(c)}</td>`).join("") + "</tr>").join("");
     box.className = "table-wrap";
     box.innerHTML = `<table><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+  }
+
+  // 从一次任务的输出里挑出「可以送进高清」的图片路径。
+  // v4.0 修复：勾了「下载后自动送入高清（仅图片）」之前根本没人执行——
+  // 后端只把图片数量写进 job["auto_hd"]，前端没有任何代码读它。
+  function pickAutoHdImages(outputs) {
+    return (outputs || [])
+      .filter((o) => o && o.is_image && o.path)
+      .map((o) => o.path);
   }
 
   function renderOutputs(galleryId, filesId, outputs, opts = {}) {
@@ -543,6 +767,8 @@
     clearLog("tk-log");
     setBar("tk-bar", 0);
     $("tk-result-card").style.display = "none";
+    const wantAutoHd = $("tk-auto-hd").checked;
+    let autoHdImages = [];          // 本次下载到的图片（勾了自动高清才有值）
     try {
       const r = await api("/api/tiktok/download", {
         method: "POST",
@@ -550,7 +776,7 @@
           selected: picked,        // 勾选的序号（1-based）
           sel_idx: selIdx,         // 手填序号优先由后端处理
           out_dir: "",
-          auto_hd: $("tk-auto-hd").checked,
+          auto_hd: wantAutoHd,
         },
       });
       tkDownloadJob = r.job_id;
@@ -562,6 +788,7 @@
         onOutputs: (outputs, data) => {
           $("tk-result-card").style.display = "";
           renderOutputs("tk-gallery", "tk-files", outputs);
+          if (wantAutoHd) autoHdImages = pickAutoHdImages(outputs);
           const zipUrl = (data && data.zip_url) || "";
           if (zipUrl) {
             $("tk-zip-row").style.display = "";
@@ -571,6 +798,24 @@
           } else {
             $("tk-zip-row").style.display = "none";
           }
+        },
+        onDone: (kind) => {
+          // 下载成功后，把本次的图片真的送进高清页并按既有流程开始处理
+          // （后端不能替前端开高清任务，见 app.js 顶部 pickAutoHdImages 注释）
+          if (!wantAutoHd || kind !== "job_done" || !autoHdImages.length) return;
+          const paths = autoHdImages.filter((p) => !hdServerFiles.includes(p));
+          hdServerFiles = hdServerFiles.concat(paths);
+          renderPicked();
+          const n = autoHdImages.length;
+          autoHdImages = [];
+          toast(`已自动送入高清修复：${n} 张图片`);
+          activatePage("hd");
+          if (hdBusy) {
+            toast("高清任务正在运行，已加入列表，稍后点「开始处理」");
+            return;
+          }
+          const btn = $("hd-start");
+          if (btn) btn.click();     // 复用高清页既有的开始流程，避免两套逻辑分叉
         },
       });
       toast(picked.length ? `已开始下载 ${picked.length} 项` : "已开始下载");
@@ -1170,14 +1415,46 @@
         });
       };
       const modelOpts = m.models || [];
-      const prefer = (modelOpts.find((x) => x.value === "realesr-general-x4v3")
+      const fallback = (modelOpts.find((x) => x.value === "realesr-general-x4v3")
         || modelOpts[0] || {}).value;
-      fillOpts($("hd-img-model"), modelOpts, prefer);
-      fillOpts($("hd-vid-model"), modelOpts, prefer);
-      fillOpts($("hd-scale"), m.scales || [], "自动（推荐）");
+
+      // v4.0 修复：把「上次用的参数」真的填回表单。
+      // services._remember_choices() 一直在存 image_model / video_model /
+      // image_scale / video_scale / video_sharp / video_max_side / face_enhance /
+      // interpolate，但界面从来没读过它们 —— 重启后表单还是写死的默认值
+      // （「存了不生效」，用户上次选的模型/档位白选）。
+      // 数据来源：GET /api/settings 的 raw（就是完整配置文件）。
+      let pref = {};
+      try { pref = (await api("/api/settings")).raw || {}; } catch (_) { pref = {}; }
+      const pickModel = (want) =>
+        (modelOpts.some((x) => x.value === want) ? want : fallback);
+      fillOpts($("hd-img-model"), modelOpts, pickModel(pref.image_model));
+      fillOpts($("hd-vid-model"), modelOpts, pickModel(pref.video_model));
+
+      // 档位：配置里存的是 2 / 4（数字），下拉项是「2x」「4x」「自动（推荐）」
+      const scaleLabel = (v) =>
+        (Number(v) === 2 ? "2x" : Number(v) === 4 ? "4x" : "自动（推荐）");
+      fillOpts($("hd-scale"), m.scales || [],
+        scaleLabel(pref.image_scale != null ? pref.image_scale : pref.video_scale));
       if (m.sides && m.sides.length) {
-        fillOpts($("hd-side"), m.sides, "1920");
+        // 视频档位：存的是 video_sharp（是否只锐化）+ video_max_side（数字）
+        const wantSide = pref.video_sharp === true
+          ? "sharp" : String(pref.video_max_side != null ? pref.video_max_side : "1920");
+        fillOpts($("hd-side"), m.sides,
+          (m.sides.some((o) => String(o.value) === wantSide) ? wantSide : "1920"));
       }
+      if (typeof pref.face_enhance === "boolean") {
+        $("hd-face").checked = pref.face_enhance;
+      }
+      if (typeof pref.interpolate === "boolean") {
+        $("hd-interp").checked = pref.interpolate;
+      }
+      // 输出长边上限的 option value 是「4096（推荐）」这种带说明的文字，
+      // 按前缀匹配，避免把中文说明写死在 JS 里。
+      const maxOpt = Array.from($("hd-max").options).find(
+        (o) => o.value.startsWith(String(pref.max_output_size != null
+          ? pref.max_output_size : "")));
+      if (maxOpt) $("hd-max").value = maxOpt.value;
       renderPresets(m.presets || []);
     } catch (e) {
       writeLog("hd-log", "模型列表加载失败：" + e.message);
@@ -1197,6 +1474,8 @@
   // 供 collector.js 使用的公共能力（同一份 DOM / 同一套请求与提示逻辑）
   window.TKStudio = {
     $, el, esc, fmtSize, api, toast, setDisabled, setBar, writeLog, clearLog,
+    notify: Notify,
+    notifyCompletion,
     watchJob, jobAction, activatePage, PAGE_LOADERS, pageLoaded, PAGES,
     tabSummary: (t) => { const n = $("task-summary"); if (n) n.textContent = t; },
   };

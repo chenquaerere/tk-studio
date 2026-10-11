@@ -108,6 +108,15 @@ EXTRA = '''
 # 并去掉对 gradio / ui.theme 的依赖，改为纯 HTML 生成。
 # =====================================================================
 
+# 中文 Windows 的 cmd 默认代码页是 GBK：脚本最后一行打印 ✅/❌ 会抛
+# UnicodeEncodeError —— 明明所有断言都通过了，退出码却是 1（看起来像验收失败）。
+# 这里自己把输出切成 UTF-8，任何控制台都能把结果打印完。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 def _refresh_all():
     """模型库刷新：返回（表格数据, 卡片 HTML）。"""
     return models_table(), models_cards_html()

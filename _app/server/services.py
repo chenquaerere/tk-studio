@@ -36,7 +36,8 @@ if sys.stderr is None:
 # ---------- 高清板块 ----------
 from watermark.core.config import PROJECT_ROOT, load, save
 from watermark.core.output import day_dir
-from watermark.core.utils import IMAGE_EXTS, VIDEO_EXTS, env_info, find_ffmpeg
+from watermark.core.utils import (ENCODE_TIMEOUT, IMAGE_EXTS, VIDEO_EXTS, env_info,
+                                  find_ffmpeg, fmt_timeout)
 from watermark.core.engines.models import (
     MODELS, download_model, download_all_missing, model_status,
     model_cards, selectable_keys,
@@ -379,22 +380,6 @@ def _summary(ok, errs, error_list, t_start=None):
     return "\n".join(lines)
 
 
-def _notify(ok, errs):
-    """处理完成时弹出提示并播放提示音。"""
-    try:
-        if ok > 0 and errs == 0:
-            bus.notify(f"✅ 处理完成：成功 {ok} 项", "ok")
-        elif ok > 0:
-            bus.notify(f"处理完成：成功 {ok} 项，失败 {errs} 项", "warn")
-        else:
-            bus.notify("全部处理失败，请查看“处理信息”", "error")
-        if ok > 0 and load().get("beep_on_done", True):
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-    except Exception:
-        pass
-
-
 def _remember_choices(kind, model, scale, face=None, interpolate=None, max_side=None):
     """记住本次选择，下次打开界面默认使用。
 
@@ -426,9 +411,6 @@ def _remember_choices(kind, model, scale, face=None, interpolate=None, max_side=
         log.warning("保存上次使用的参数失败（不影响任务结果）：%s", exc)
 
 
-def cancel_run():
-    CANCEL.set()
-    return "已请求取消，当前文件处理完后停止"
 
 
 def pick_folder():
@@ -448,22 +430,6 @@ def open_output():
     return "已打开输出目录"
 
 
-def cleanup_work(hours: float = 6.0) -> None:
-    """清理中断任务残留的 .work 临时目录（启动时调用）。"""
-    try:
-        root = Path(load().get("output_root", "") or ".")
-        work = root / ".work"
-        if not work.is_dir():
-            return
-        now = time.time()
-        for d in work.iterdir():
-            try:
-                if now - d.stat().st_mtime > hours * 3600:
-                    shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 
 # ---------- 剪贴板 ----------
@@ -485,21 +451,8 @@ def read_clipboard() -> str:
         return ""
 
 
-def paste_clipboard_into(current: str) -> str:
-    """把剪贴板中的链接合并进输入框。"""
-    clip = read_clipboard()
-    if not clip:
-        return current or ""
-    clip = clip.strip()
-    if not clip:
-        return current or ""
-    if current and current.strip():
-        return current.rstrip() + "\n" + clip
-    return clip
 
 
-def clear_inputs():
-    return "", "", [], [], 0
 
 
 # ---------- 去水印工具 ----------
@@ -573,41 +526,8 @@ def _parse_selection(text, total):
 
 # ---------- 去水印处理器 ----------
 
-def _tk_progress_text(job):
-    """把 Job 渲染成给用户看的进度文本（v4.0：暂停/取消状态从 Job 读，不再看全局标志）。"""
-    lines = []
-    total = job.get("total", 0)
-    ok = job.get("ok", 0)
-    fail = job.get("fail", 0)
-    if total:
-        lines.append(f"总进度：{ok + fail}/{total}（成功 {ok}，失败 {fail}）")
-    cur = job.get("current", "")
-    if cur:
-        pct = int(job.get("pct", 0) or 0)
-        if job.paused:
-            lines.append(f"⏸ 已暂停：{cur}（{pct}%）")
-        else:
-            lines.append(f"▶ 正在下载：{cur}（{pct}%）")
-    elif job.paused:
-        lines.append("⏸ 已暂停")
-    if job.cancelled:
-        lines.append("⏹ 已请求取消（当前文件下载完后停止）")
-    eta = _tk_eta_text(job)
-    if eta:
-        lines.append(eta)
-    lines.append("-" * 30)
-    lines.extend(job.get("lines", [])[-12:])
-    return "\n".join(lines)
 
 
-def _tk_progress_pct(status):
-    total = int(status.get("total", 0) or 0)
-    if total <= 0:
-        return 0
-    done = int(status.get("ok", 0) or 0) + int(status.get("fail", 0) or 0)
-    if status.get("current"):
-        done += (int(status.get("pct", 0) or 0)) / 100.0
-    return max(0, min(100, round(done / total * 100)))
 
 
 def _tk_eta_text(status):
@@ -801,9 +721,9 @@ def _tk_download_worker(selected, sel_idx, out_dir, job, auto_hd):
 
         job["final"] = job.get("final") or f"完成 {ok} 个，失败 {fail} 个\n" + "\n".join(lines)
         if ok > 0 and fail == 0:
-            job["notify"] = ("ok", ok)
+            job["notify"] = ("ok", f"下载完成：成功 {ok} 个")
         elif fail > 0:
-            job["notify"] = ("warn", ok)
+            job["notify"] = ("warn", f"下载完成：成功 {ok} 个，失败 {fail} 个")
         # v4.0 第 3 期：把最终产物作为一条事件推给前端（画廊 / 打包下载）
         try:
             from server.media import outputs_payload, file_url
@@ -830,122 +750,6 @@ def _tk_download_worker(selected, sel_idx, out_dir, job, auto_hd):
         job.fail(str(e))
 
 
-def do_parse(text, out_dir):
-    _apply_tk_output_dir(out_dir)
-    urls = parse_input(text or "")
-    if not urls:
-        return [], [], [], "未识别到有效链接（支持 TikTok / 抖音 分享链接或口令）", 0
-    downloader = _get_tk_downloader()
-    results = []
-    for i, u in enumerate(urls, 1):
-        bus.notify(f"正在解析 {i}/{len(urls)}", "info")
-        results.append(downloader.parse_info(u))
-    rows, infos, options, covers = [], [], [], []
-    options_map = {}
-    for i, info in enumerate(results, 1):
-        if info is None:
-            # v2.1: 显示具体失败原因（限流/网络/代理/风控等）
-            reason = downloader.last_error(urls[i - 1]) or "解析失败"
-            if len(reason) > 60:
-                reason = reason[:60] + "…"
-            rows.append([i, "-", "-", "解析失败", reason, "-", "-", "失败"])
-            infos.append(None)
-        else:
-            q = info.extra.get("quality", "-")
-            dur = f"{info.duration:.0f} 秒" if info.duration else "-"
-            ctype = "视频" if info.content_type.value == "video" else "图集"
-            plat = "TikTok" if info.extra.get("platform") == "tiktok" else "抖音"
-            title_short = (info.title or "(无标题)")[:36]
-            rows.append([
-                i, plat, ctype, title_short, info.author or "-",
-                q, dur, "可下载",
-            ])
-            infos.append(info)
-            # 封面预览
-            cover = info.thumbnail or (info.image_urls[0] if info.image_urls else None)
-            if isinstance(cover, str) and cover.startswith("http"):
-                covers.append(cover)
-            else:
-                covers.append(None)
-            if info.content_type.value == "video":
-                label = f"{i}. 🎬 [{plat}] {title_short[:30]}"
-                options.append(label)
-                options_map[label] = (i, None)
-            else:
-                n_imgs = len(info.image_urls) or 1
-                if n_imgs <= 1:
-                    label = f"{i}. 🖼 [{plat}] {title_short[:30]}"
-                    options.append(label)
-                    options_map[label] = (i, None)
-                else:
-                    for j in range(1, n_imgs + 1):
-                        label = f"{i}-{j}. 🖼 {title_short[:24]} 第{j}/{n_imgs}张"
-                        options.append(label)
-                        options_map[label] = (i, j)
-    with _parse_lock:
-        _parsed_infos.clear()
-        _parsed_infos.extend(infos)
-        _parsed_options.clear()
-        _parsed_options.extend(options)
-        _parsed_options_map.clear()
-        _parsed_options_map.update(options_map)
-    ok = sum(1 for x in infos if x is not None)
-    msg = (f"识别 {len(urls)} 条链接，成功 {ok} 条，失败 {len(urls) - ok} 条。"
-           f"（TikTok 走 tikwm，抖音走本地 a_bogus 解析）")
-    covers = _cache_covers_parallel(covers)
-    return (rows, covers,
-            {"choices": options, "value": []}, msg, len(infos))
-
-
-def do_download(selected, sel_idx, out_dir, auto_hd):
-    """生成器：后台线程下载，实时刷新进度，支持暂停/继续/取消。
-
-    v4.0 第 1 期：进度状态改为 ui.bus 的 Job 对象（结构化事件）。
-    """
-    global _tk_worker_running
-    with _tk_worker_lock:
-        if _tk_worker_running:
-            yield "已有下载任务在运行，请等待完成或先取消", 0, "", [], None, []
-            return
-        _tk_worker_running = True
-    _tk_cancel.clear()
-    _tk_pause.set()
-    job = bus.create_job(JobKind.TIKTOK_DOWNLOAD, label="去水印下载",
-                         cancel=_tk_cancel, pause=_tk_pause)
-    try:
-        t = threading.Thread(target=_tk_download_worker,
-                             args=(selected, sel_idx, out_dir, job, auto_hd),
-                             daemon=True)
-        t.start()
-        while t.is_alive():
-            # 固定每 0.3 秒输出一次，暂停/等待时也保持界面可响应（暂停按钮才能生效）
-            yield _tk_progress_text(job), _tk_progress_pct(job), "", [], None, []
-            time.sleep(0.3)
-        t.join()
-        hd_hint = ""
-        if job.get("auto_hd"):
-            hd_hint = (f"已下载 {job['auto_hd']} 张图片，可到「✨ 高清修复」"
-                       f"点击『📥 导入最近下载的素材』一键高清")
-        # v2.1.1: 下载完成的文件列表 (手机浏览器可点击保存到手机)
-        dl_files = [f for f in job.get("files", []) if f and Path(f).exists()]
-        if dl_files:
-            dl_files = sorted(set(dl_files))
-        zip_path = job.get("zip_path") or None
-        if zip_path and not Path(zip_path).exists():
-            zip_path = None
-        # v2.1.3: 下载完成的图片直接显示 -> 手机长按保存到相册
-        gallery = [f for f in dl_files
-                   if Path(f).suffix.lower() in IMAGE_EXTS]
-        yield (job.get("final") or _tk_progress_text(job),
-               _tk_progress_pct(job), hd_hint, dl_files, zip_path, gallery)
-        n = job.get("notify")
-        if n and n[0] == "ok":
-            bus.notify("✅ 全部下载完成", "ok")
-        elif n:
-            bus.notify(f"完成 {n[1]} 个，失败 {job['fail']} 个", "warn")
-    finally:
-        with _tk_worker_lock:
-            _tk_worker_running = False
 
 
 def _runtime_port() -> int:
@@ -995,19 +799,10 @@ def video_info_dict(info) -> dict:
     }
 
 
-def tk_pause_action():
-    _tk_pause.clear()
-    return "已暂停：当前文件下载完后停止，可点「▶ 继续」恢复"
 
 
-def tk_resume_action():
-    _tk_pause.set()
-    return "已继续"
 
 
-def tk_cancel_action():
-    _tk_cancel.set()
-    return "已请求取消：当前文件下载完后停止"
 
 
 def do_load_history():
@@ -1086,43 +881,8 @@ def _hd_eta_text(status):
     return f"预计剩余 {_fmt_duration(eta)}"
 
 
-def _hd_progress_pct(status):
-    it = int(status.get("img_total", 0) or 0)
-    iv = int(status.get("vid_total", 0) or 0)
-    total = it + iv
-    if total <= 0:
-        return 0
-    done = int(status.get("img_done", 0) or 0) + int(status.get("vid_done", 0) or 0)
-    frac = float(status.get("frac", 0.0) or 0.0)
-    if status.get("stage") == "video" and status.get("current"):
-        done += frac
-    return max(0, min(100, round(done / total * 100)))
 
 
-def _hd_progress_text(job):
-    """把 Job 渲染成给用户看的进度文本（v4.0：状态从 Job 读，不再看全局标志）。"""
-    lines = []
-    cur = job.get("current", "")
-    if cur:
-        if job.paused:
-            lines.append(f"⏸ 已暂停：{cur}")
-        else:
-            lines.append(f"▶ 正在处理：{cur}")
-    lines.append(f"图片 {job.get('img_done', 0)}/{job.get('img_total', 0)}，"
-                 f"视频 {job.get('vid_done', 0)}/{job.get('vid_total', 0)}")
-    stage = _hd_stage_text(job)
-    if stage:
-        lines.append(stage)
-    eta = _hd_eta_text(job)
-    if eta:
-        lines.append(eta)
-    if job.cancelled:
-        lines.append("⏹ 已请求取消（当前文件处理完后停止）")
-    errs = job.get("errors", [])
-    if errs:
-        lines.append("-" * 30)
-        lines.extend(errs[-5:])
-    return "\n".join(lines)
 
 
 def _hd_worker(files, folder, image_model, video_model, img_scale, vid_scale,
@@ -1233,7 +993,13 @@ def _hd_worker(files, folder, image_model, video_model, img_scale, vid_scale,
         ok = len(img_results) + len(vid_results)
         job["summary"] = _summary(ok, len(errors), errors, t_start)
         job["errors"] = list(errors)
-        job["notify"] = (ok, len(errors))
+        # 元组的第二项是要给用户看的文字（jobs.py 会把它放进 NOTIFY 事件）。
+        if ok == 0 and errors:
+            job["notify"] = ("error", "高清修复全部失败，请查看「处理信息」")
+        elif errors:
+            job["notify"] = ("warn", f"高清修复完成：成功 {ok} 项，失败 {len(errors)} 项")
+        else:
+            job["notify"] = ("ok", f"高清修复完成：成功 {ok} 项")
         # v4.0 第 3 期：把图片/视频产物推给前端画廊
         try:
             from server.media import outputs_payload
@@ -1268,58 +1034,66 @@ def _hd_worker(files, folder, image_model, video_model, img_scale, vid_scale,
             logging.debug("释放显存失败", exc_info=True)
 
 
-def handle_mixed(files, folder, image_model, video_model, img_scale, vid_scale,
-                 vid_side, face, interpolate, out_root, img_max, mode="both"):
-    """生成器：后台线程处理，实时刷新进度，支持暂停/继续/取消。
+def tk_worker_begin() -> bool:
+    """尝试占用「去水印下载」位置：返回 False 表示已有任务在跑。
 
-    v4.0 第 1 期：进度状态从「裸字典 + 全局标志」改为 ui.bus 的 Job 对象。
-    本函数仍是 Gradio 生成器（渲染适配层），但业务工作线程已只认 Job。
+    和高清那边（hd_worker_begin）是同一类 v4.0 重构遗留：占用标志
+    `_tk_worker_running` 原来只由 Gradio 时代的 do_download() 生成器设置，
+    界面改走 /api/tiktok/download 之后没人再写它，于是
+    `/api/tiktok/download` 里「已有下载任务在运行」的判断永远为假 ——
+    连点两次「下载」会真的起两个下载线程，往同一个输出目录写同名文件。
+    """
+    global _tk_worker_running
+    with _tk_worker_lock:
+        if _tk_worker_running:
+            return False
+        _tk_worker_running = True
+        return True
+
+
+def tk_worker_end() -> None:
+    """释放「去水印下载」位置（工作线程结束/启动失败都要调用）。"""
+    global _tk_worker_running
+    with _tk_worker_lock:
+        _tk_worker_running = False
+
+
+def tk_worker_busy() -> bool:
+    with _tk_worker_lock:
+        return _tk_worker_running
+
+
+def hd_worker_begin() -> bool:
+    """尝试占用「高清处理」位置：返回 False 表示已有任务在跑。
+
+    背景（v4.0 重构遗留）：占用标志原来只由 Gradio 时代的 handle_mixed()
+    生成器设置，而界面改走 /api/hd/start 后没人再写这个标志，导致
+    「已有高清任务在运行」的判断永远为假——连点两次「开始处理」会真的起两个
+    工作线程，抢同一块显存、往同一个输出目录写文件。现在由启动接口通过
+    这两个函数原子地占用/释放。
     """
     global _hd_worker_running
     with _hd_worker_lock:
         if _hd_worker_running:
-            yield [], [], "已有处理任务在运行，请等待完成或先取消", 0
-            return
+            return False
         _hd_worker_running = True
-    CANCEL.clear()
-    _hd_pause.set()
-    kind = {"image": JobKind.HD_IMAGE, "video": JobKind.HD_VIDEO}.get(mode, JobKind.HD_MIXED)
-    label = {"image": "图片高清", "video": "视频高清"}.get(mode, "混合批量高清")
-    # 过渡期仍传入既有的全局 Event，保证与「取消/暂停」按钮行为完全一致；
-    # 第 2 期改为每个任务独立信号（Job 已支持）。
-    job = bus.create_job(kind, label=label, cancel=CANCEL, pause=_hd_pause)
-    try:
-        t = threading.Thread(target=_hd_worker,
-                             args=(files, folder, image_model, video_model,
-                                   img_scale, vid_scale, vid_side, face,
-                                   interpolate, out_root, img_max, job, mode),
-                             daemon=True)
-        t.start()
-        while t.is_alive():
-            # 固定每 0.3 秒输出一次，暂停/等待时也保持界面可响应（暂停按钮才能生效）
-            yield (job.get("gallery", []), job.get("vids", []),
-                   _hd_progress_text(job), _hd_progress_pct(job))
-            time.sleep(0.3)
-        t.join()
-        summary = job.get("summary") or _hd_progress_text(job)
-        yield (job.get("gallery", []), job.get("vids", []), summary,
-               _hd_progress_pct(job))
-        n = job.get("notify")
-        if n:
-            _notify(n[0], n[1])
-    finally:
-        with _hd_worker_lock:
-            _hd_worker_running = False
+        return True
 
 
-def hd_pause_action():
-    _hd_pause.clear()
-    return "已暂停：当前文件处理完后停止，可点「▶ 继续」恢复"
+def hd_worker_end() -> None:
+    """释放「高清处理」位置（工作线程结束/启动失败都要调用）。"""
+    global _hd_worker_running
+    with _hd_worker_lock:
+        _hd_worker_running = False
 
 
-def hd_resume_action():
-    _hd_pause.set()
-    return "已继续"
+def hd_worker_busy() -> bool:
+    with _hd_worker_lock:
+        return _hd_worker_running
+
+
+
+
 
 
 def recent_files_info():
@@ -1405,14 +1179,6 @@ def library_gallery():
     return imgs
 
 
-def library_open_dir():
-    root = Path(tk_config.output_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    try:
-        os.startfile(str(root))
-    except Exception:
-        pass
-    return f"已打开：{root}"
 
 
 # ---------- 工具箱 ----------
@@ -1521,9 +1287,15 @@ def video_to_gif(video, fps: int, scale: int):
     import subprocess
     # v4.0: 显式 UTF-8 解码。原来 text=True 会按系统编码(中文 Windows=GBK)
     # 解码 ffmpeg 的 UTF-8 输出，中文路径会乱码甚至抛 UnicodeDecodeError。
-    r = subprocess.run(cmd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace",
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+    # v1.4.3: 补超时，卡住的 ffmpeg 不再让工具页一直转圈。
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=ENCODE_TIMEOUT,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return (f"转换失败：ffmpeg 超过 {fmt_timeout(ENCODE_TIMEOUT)} 没有结束，"
+                "已强制中止（文件可能被占用或损坏）"), None
     if r.returncode != 0:
         return f"转换失败：{r.stderr[-300:]}", None
     return f"✅ 已生成：{out}（{_fmt_size(out.stat().st_size)}）", str(out)
@@ -1548,9 +1320,14 @@ def video_extract_frames(video, fps: int, out_dir: str):
     # v4.0: 显式 UTF-8 解码（同 video_to_gif），并统计抽帧前后差值，
     # 避免把上一次运行残留的 frame_*.jpg 也算进本次数量。
     before = len(list(out_root.glob("frame_*.jpg")))
-    r = subprocess.run(cmd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace",
-                       creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=ENCODE_TIMEOUT,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return (f"抽帧失败：ffmpeg 超过 {fmt_timeout(ENCODE_TIMEOUT)} 没有结束，"
+                "已强制中止（文件可能被占用或损坏）")
     if r.returncode != 0:
         return f"抽帧失败：{r.stderr[-300:]}"
     n = len(list(out_root.glob("frame_*.jpg"))) - before
@@ -1607,6 +1384,25 @@ def cleanup_tmp():
 
 # ---------- 关闭程序 ----------
 
+def close_collector_runtime() -> None:
+    """释放采集子系统：Playwright 驱动子进程 + SQLite 连接。
+
+    v1.4.3 修复：`server.collector_api.shutdown()` 的 docstring 写着
+    「关停时释放浏览器与数据库（由 desktop.py 调用）」，但实际上**全项目
+    没有任何调用点**。于是关窗、或点界面「关闭程序」之后，只要本次运行
+    用过采集/聊天，Playwright driver（node.exe）与 Chromium 就会变成孤儿
+    进程留在后台，数据库连接也不会关闭 —— 正是 collector/bootstrap.py
+    里反复警告的「不 stop 会导致驱动进程残留（历史踩坑）」。
+    现在把它接进两条关停路径：desktop.do_shutdown（关窗）
+    与 services.request_shutdown（界面按钮 / /api/shutdown）。
+    """
+    try:
+        from server import collector_api
+        collector_api.shutdown()
+    except Exception as e:                     # noqa: BLE001 — 关停必须兜底
+        logging.warning(f"释放采集子系统失败: {e}")
+
+
 def request_shutdown(reason: str = "用户请求") -> None:
     """协作式关停（v4.0）。
 
@@ -1628,6 +1424,8 @@ def request_shutdown(reason: str = "用户请求") -> None:
             logging.info(f"已请求取消 {n} 个进行中的任务")
     except Exception:
         pass
+    # 释放 Playwright 驱动子进程与数据库连接（必须在 os._exit 之前）。
+    close_collector_runtime()
     try:
         if _DEMO is not None:
             _DEMO.close()          # 释放监听端口
@@ -1654,14 +1452,6 @@ def shutdown_app():
     return "⏻ 程序正在关闭…… 1 秒后进程结束。"
 
 
-def shutdown_hint():
-    return ("- 界面「⏻ 关闭程序」按钮：电脑/手机都能点，点后 1 秒程序退出\n"
-            "- 若用「TK去水印高清程序.exe」启动：右下角托盘图标右键 → 退出程序\n"
-            "- 若用「启动-高清去水印.bat」启动：直接关闭黑色命令行窗口即可\n"
-            "- v4.0 起程序自带桌面窗口，直接关闭程序窗口即可退出")
-
-
-
 # ---------- 设置 ----------
 
 def settings_values():
@@ -1672,7 +1462,12 @@ def settings_values():
             c["keep_frames"], int(c.get("max_output_size", 8192) or 0),
             int(c.get("video_max_side", 2560) or 0),
             bool(c.get("beep_on_done", True)),
-            bool(c.get("lan_access", False)))
+            bool(c.get("lan_access", False)),
+            # 这两项 settings_save() 一直在写，但设置页读不回来（填了保存、
+            # 重新打开页面又变回默认值，再点保存就把用户的选择覆盖掉）。
+            # 放在末尾是为了不改动上面已有的配对顺序。
+            bool(c.get("video_skip_similar", True)),
+            int(c.get("face_work_side", 4096) or 4096))
 
 
 def settings_save(out_root, date_folder, face_enhance, tile, half,
@@ -1683,7 +1478,9 @@ def settings_save(out_root, date_folder, face_enhance, tile, half,
     c["output_root"] = str(Path(str(out_root)).expanduser())
     c["date_folder"] = bool(date_folder)
     c["face_enhance"] = bool(face_enhance)
-    c["face_work_side"] = int(facework or 2048)
+    # 兜底值与 common/config.py 的 DEFAULTS["face_work_side"] 保持一致（4096），
+    # 避免「界面显示一个值、实际按另一个值处理」。
+    c["face_work_side"] = int(facework or 4096)
     c["tile"] = int(tile or 0)
     c["half"] = bool(half)
     c["video_encoder"] = encoder
@@ -1757,32 +1554,6 @@ def env_text():
     return "\n".join(f"{k}: {v}" for k, v in info.items())
 
 
-def safe_mixed(*args):
-    try:
-        yield from handle_mixed(*args)
-    except Exception as exc:
-        logging.exception("批量高清处理失败")
-        yield [], [], f"处理失败：{exc}", 0
-
-
-def safe_image_only(files, folder, model, scale, face, out_root, img_max):
-    """图片修复页：只处理图片，只需 3 个输出（图库/信息/进度）。"""
-    for gallery, _vids, summary, pct in safe_mixed(
-        files, folder, model, model, scale, scale, 1920, face, False,
-        out_root, img_max, "image",
-    ):
-        yield gallery, summary, pct
-
-
-def safe_video_only(files, folder, model, scale, side, interp, out_root):
-    """视频修复页：只处理视频（当前视频链路无人脸修复环节）。"""
-    for _gallery, vids, summary, pct in safe_mixed(
-        files, folder, model, model, scale, scale, side, False, interp,
-        out_root, "4096（推荐）", "video",
-    ):
-        yield vids, summary, pct
-
-
 # ---------- 预设套用 ----------
 
 # 预设 → 图片输出长边上限档位
@@ -1822,30 +1593,6 @@ def _apply_preset_video(key, cur_model, cur_scale, cur_side, cur_interp):
             f"⚠ 「{label}」需要生成式超分引擎，将在后续版本接入，敬请期待")
     return (model, cfg.get("scale", cur_scale), cfg.get("side", cur_side),
             cur_interp, f"已套用预设：{label} ｜ {presets.describe(key, 'video')}")
-
-
-def safe_download_one(key):
-    try:
-        return download_one(key)
-    except Exception as exc:
-        logging.exception("模型下载失败")
-        return models_table(), f"下载失败：{exc}"
-
-
-def safe_download_all():
-    try:
-        return download_all()
-    except Exception as exc:
-        logging.exception("模型下载失败")
-        return models_table(), f"下载失败：{exc}"
-
-
-def safe_settings(*args):
-    try:
-        return settings_save(*args)
-    except Exception as exc:
-        logging.exception("保存设置失败")
-        return f"保存失败：{exc}"
 
 
 # ---------- UI ----------

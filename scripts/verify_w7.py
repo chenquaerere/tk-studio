@@ -44,6 +44,15 @@ for _p in (str(ROOT / "_app"), str(ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# 控制台可能是 GBK（Windows 默认），而本脚本会打印 emoji 与「—」等字符，
+# 直接 print 会抛 UnicodeEncodeError 让整轮验收半路崩掉（2026-10-10 实测）。
+# 统一把标准输出改成 UTF-8 + 替换非法字符：宁可显示成问号，也不能中断验收。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 PASS = 0
 FAIL = 0
 
@@ -491,10 +500,11 @@ def main() -> int:
               'job.finish(job["summary"], data=result)' in _src
               and 'job.cancel_finish("已停止", data=result)' in _src)
 
-        # 「通知跑偏」的回归守卫：必须锚定**屏幕可用区右下角**，且留出边距。
-        # 历史教训：v1.3.0 没扣任务栏、v1.3.1 改成屏幕正中压住内容 ——
-        # 用户两次反馈后定稿为「右下角 + 24px 边距 + 避开任务栏」。
-        print("\n[3d-3] 通知弹窗必须锚定屏幕可用区右下角（不遮挡内容）")
+        # 「通知跑偏」的回归守卫。历史：v1.3.0 没扣任务栏、v1.3.1 改成屏幕正中
+        # 压住内容；2026-10-10 拆成两条通道；2026-10-11 用户第三次反馈后取消分流
+        # —— 完成提醒只用界面内卡片（见下方 [3d-3b]），桌面浮层只剩显式调用时
+        # 才出现，本项校验它自己的锚点没跑偏。
+        print("\n[3d-3] 通知组件本身：显式调用桌面浮层时仍锚定可用区右下角")
         import json as _json
         import os as _os
 
@@ -513,6 +523,15 @@ def main() -> int:
             # 本项要断言的是「第 1 张通知」的落点，所以先把活跃表清空。
             _nt._alive.clear()
 
+            # ① desktop=False（只想出声的调用，例如完成提示音）：浮层**必须不弹**
+            _notify("__w7_probe__", "不应出现的桌面弹窗", kind="info",
+                    timeout_ms=400, sound=False, desktop=False)
+            time.sleep(0.6)
+            check("desktop=False（只出声的调用）时不弹桌面浮层",
+                  (not _dbg.exists()) and not _nt._alive,
+                  f"debug={_dbg.exists()} alive={len(_nt._alive)}")
+
+            # ② 显式要求浮层时（默认 desktop=True）：落点不变
             _notify("__w7_probe__", "右下角几何校验", kind="info",
                     timeout_ms=400, sound=False)
             for _ in range(30):
@@ -544,8 +563,187 @@ def main() -> int:
             except OSError:
                 pass
 
+        # 界面内卡片（前台通道）的静态接线：组件 + 样式 + 路由 + 设置控件。
+        # 这些是"通知别再跑出窗口"的根因所在，静态断言能挡住以后被误删。
+        _app_js = (ROOT / "_app" / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+        _col_js = (ROOT / "_app" / "frontend" / "js" / "collector.js").read_text(encoding="utf-8")
+        _css = (ROOT / "_app" / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+        _html = (ROOT / "_app" / "frontend" / "index.html").read_text(encoding="utf-8")
+        check("app.js 提供界面内通知组件并挂到 TKStudio",
+              "const Notify = (() =>" in _app_js and "notify: Notify," in _app_js)
+        check("app.css 定义右下角卡片栈样式",
+              "#notify-stack" in _css and ".notify-card" in _css)
+        check("collector.js 交给统一出口，不再自己下发桌面通知",
+              "window.TKStudio.notifyCompletion" in _col_js
+              and "shared(message, kind, title, { sound });" in _col_js
+              and "desktop: useDesktop" not in _col_js
+              and 'api("/api/system/notify"' not in _col_js)
+        check("采集设置保留卡片尺寸控件，位置分流控件已删除",
+              all(k in _html for k in ("cset-notify-width", "cset-notify-scale"))
+              and not any(k in _html for k in ("cset-notify-inapp", "cset-notify-away")))
+
+        # 完成消息（高清修复 / 下载）也要走界面内卡片：此前后端只发一行 toast，
+        # 窗口不在前台就彻底错过。进度类短消息必须保持 toast —— 否则每解析
+        # 一条链接就堆一张卡片。
+        print("\n[3d-3a] 完成消息打标：打标消息进界面内卡片，进度类仍是 toast")
+        _bus_src = (ROOT / "_app" / "ui" / "bus.py").read_text(encoding="utf-8")
+        _svc_src = (ROOT / "_app" / "server" / "services.py").read_text(encoding="utf-8")
+        check('bus.py 的 notify 支持 card 关键字（默认 False 保持原行为）',
+              'def notify(message: str, level: str = "info", card: bool = False)'
+              in _bus_src and '"card": bool(card),' in _bus_src)
+        try:
+            from ui.bus import drain_notifications as _drain
+            from ui.bus import notify as _bus_notify
+
+            _drain()  # 清掉前面探针留下的消息，避免拿错
+            _bus_notify("__w7_card__", "ok", card=True)
+            _bus_notify("__w7_toast__", "info")
+            _got = _drain()
+            _card = next((x for x in _got if x["message"] == "__w7_card__"), {})
+            _plain = next((x for x in _got if x["message"] == "__w7_toast__"), {})
+            check("bus.notify(card=True) 真的带上 card 标记（完成消息可被识别）",
+                  _card.get("card") is True and _plain.get("card") is False,
+                  f"card={_card.get('card')} plain={_plain.get('card')}")
+        except Exception as exc:  # noqa: BLE001
+            check("bus.notify(card=...) 标记", False, f"{type(exc).__name__}: {exc}")
+        check("高清修复完成 / 全部下载完成 都带上了要显示的正文",
+              'job["notify"] = ("ok", f"下载完成：成功 {ok} 个")' in _svc_src
+              and '("ok", f"高清修复完成：成功 {ok} 项")' in _svc_src
+              and '("error", "高清修复全部失败，请查看「处理信息」")' in _svc_src)
+        check("完成提醒的老死函数（写了没人调用）已删除",
+              "def _notify(" not in _svc_src and "def do_download(" not in _svc_src)
+        _jobs_src = (ROOT / "_app" / "server" / "jobs.py").read_text(encoding="utf-8")
+        check("jobs.py 把 notify 元组的正文放进事件（否则只有光秃秃的「完成」）",
+              "self.emit(EventKind.NOTIFY, level=level, message=message)" in _jobs_src
+              and "if len(value) > 1 and value[1]:" in _jobs_src)
+        check("app.js 只有一条完成通道：界面内卡片，不再按焦点分流到桌面浮层",
+              "function notifyItem(" in _app_js
+              and "function notifyCompletion(" in _app_js
+              and "Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });" in _app_js
+              and 'desktop: false' in _app_js          # 只剩「只出声」的 beepOnce 会调后端的通知接口
+              and "toast(msg, 4200)" in _app_js
+              and "notify_desktop_when_unfocused" not in _app_js
+              and "desktop: true" not in _app_js)
+        _collector_js = (ROOT / "_app" / "frontend" / "js" / "collector.js").read_text(
+            encoding="utf-8")
+        check("采集侧也调同一个出口（不再自己 POST 桌面通知）",
+              "window.TKStudio.notifyCompletion" in _collector_js
+              and "shared(message, kind, title, { sound });" in _collector_js
+              and 'api("/api/system/notify"' not in _collector_js
+              and "useDesktop" not in _collector_js)
+        check("删掉的辅助函数没有残留调用点（否则前端启动即 ReferenceError）",
+              "syncAwayNotice" not in _app_js + _collector_js
+              and "awayNotice" not in _app_js + _collector_js)
+        check("任务完成（SSE notify）也走同一个出口，且提示音按 beep_on_done 设置",
+              "notifyCompletion(msg, kind);" in _app_js
+              and "raw.beep_on_done" in _app_js
+              and 'toast("✅ " + (ev.message' not in _app_js)
+
+        # 界面内卡片的**真实 DOM 行为**：静态断言只能证明「代码在」，
+        # 证明不了「画得出来、关得掉、设置真的生效」，所以在真浏览器里点一遍。
+        print("\n[3d-3b] 界面内通知卡片：右下角弹出 / 上限 3 张 / 可关闭 / 设置生效")
+        _dom = page.evaluate("""async () => {
+          const NS = window.TKStudio && window.TKStudio.notify;
+          if (!NS) return {err: 'TKStudio.notify 不存在'};
+          NS.configure({notify_card_width: 420, notify_card_scale: 1});
+          NS.show({title: '预热', message: 'x', kind: 'info', timeout: 1500});
+          const stack = document.getElementById('notify-stack');
+          if (!stack) return {err: '#notify-stack 没有创建'};
+          stack.querySelectorAll('.notify-card').forEach(c => c.remove());
+          const mk = (t, k) => NS.show({title: t, message: t, kind: k, timeout: 2500});
+          mk('甲', 'ok'); mk('乙', 'warn'); mk('丙', 'error'); mk('丁', 'info');
+          // 卡片有 200ms 的入场动画（scale .98 → 1），必须等动画结束再量，
+          // 否则量到的是动画中间态（曾经因此误判成「宽度少了 8px」）。
+          await new Promise(r => setTimeout(r, 500));
+          const cards = [...stack.querySelectorAll('.notify-card')];
+          const r0 = cards[0].getBoundingClientRect();
+          const sr = stack.getBoundingClientRect();
+          const toast = document.getElementById('toast');
+          return {
+            n: cards.length,
+            firstKind: cards[0].getAttribute('data-kind'),
+            lastKind: cards[cards.length - 1].getAttribute('data-kind'),
+            // 落点以卡片栈为准（它不参与动画），避免把动画中间态当成最终位置
+            gapRight: Math.round(window.innerWidth - sr.right),
+            gapBottom: Math.round(window.innerHeight - sr.bottom),
+            cardRight: Math.round(window.innerWidth - r0.right),
+            width: Math.round(r0.width),
+            ariaLive: stack.getAttribute('aria-live'),
+            role: stack.getAttribute('role'),
+            progress: !!cards[0].querySelector('.notify-progress > i'),
+            toastOpacity: toast ? parseFloat(getComputedStyle(toast).opacity) : -1,
+            cssW: getComputedStyle(document.documentElement)
+                    .getPropertyValue('--notify-w').trim(),
+          };
+        }""")
+        if _dom.get("err"):
+            check("界面内通知卡片可渲染", False, str(_dom["err"]))
+        else:
+            check("通知卡片栈最多 3 张（第 4 张挤掉最旧的一张）",
+                  _dom["n"] == 3 and _dom["firstKind"] == "warn"
+                  and _dom["lastKind"] == "info",
+                  f"n={_dom['n']} first={_dom['firstKind']} last={_dom['lastKind']}")
+            check("卡片贴在程序窗口右下角（右 20px / 底 56px）",
+                  abs(_dom["gapRight"] - 20) <= 2 and abs(_dom["gapBottom"] - 56) <= 2,
+                  f"right={_dom['gapRight']} bottom={_dom['gapBottom']}")
+            check("卡片宽度跟随设置（默认 420px）",
+                  abs(_dom["width"] - 420) <= 2 and _dom["cssW"] == "420px",
+                  f"w={_dom['width']} --notify-w={_dom['cssW']}")
+            check("卡片栈是 role=status + aria-live=polite 的无障碍区域",
+                  _dom["role"] == "status" and _dom["ariaLive"] == "polite",
+                  f"role={_dom['role']} aria-live={_dom['ariaLive']}")
+            check("卡片带倒计时进度条（不是纯静态提示）", _dom["progress"] is True)
+            check("卡片在场时旧的提示条让位（不再两处同时提示）",
+                  _dom["toastOpacity"] <= 0.05, f"opacity={_dom['toastOpacity']}")
+
+        # 尺寸设置真的生效：1.5 × 420 = 630px（宽度与字号一起放大）
+        _big = page.evaluate("""async () => {
+          const NS = window.TKStudio.notify;
+          NS.configure({notify_card_scale: 1.5});
+          NS.show({title: '缩放', message: 's', kind: 'ok', timeout: 2500});
+          await new Promise(r => setTimeout(r, 500));
+          const cards = [...document.querySelectorAll('#notify-stack .notify-card')];
+          const last = cards[cards.length - 1];
+          return {w: Math.round(last.getBoundingClientRect().width),
+                  n: cards.length,
+                  fs: getComputedStyle(last).fontSize};
+        }""")
+        check("缩放设置生效（1.5 倍 → 630px）", abs(_big["w"] - 630) <= 3,
+              f"w={_big['w']} fs={_big['fs']}")
+        page.evaluate("""() => window.TKStudio.notify.configure(
+            {notify_card_width: 420, notify_card_scale: 1})""")
+
+        # 关闭行为：点卡片上的关闭按钮后卡片真的消失（不是只隐藏）
+        _before_close = page.evaluate(
+            "() => document.querySelectorAll('#notify-stack .notify-card').length")
+        page.evaluate("""() => {
+          const cards = [...document.querySelectorAll('#notify-stack .notify-card')];
+          const btn = cards[cards.length - 1].querySelector('.notify-close');
+          if (btn) btn.click();
+        }""")
+        page.wait_for_timeout(450)
+        _after_close = page.evaluate(
+            "() => document.querySelectorAll('#notify-stack .notify-card').length")
+        check("点「×」能关掉卡片（卡片被移出 DOM）",
+              _before_close > 0 and _after_close == _before_close - 1,
+              f"{_before_close} → {_after_close}")
+
+        _after_ok = page.evaluate("""() => {
+          const cards = [...document.querySelectorAll('#notify-stack .notify-card')];
+          const btn = cards.length ? cards[cards.length - 1].querySelector('.notify-ok') : null;
+          if (btn) btn.click();
+          return document.querySelectorAll('#notify-stack .notify-card').length;
+        }""")
+        page.wait_for_timeout(450)
+        _left = page.evaluate(
+            "() => document.querySelectorAll('#notify-stack .notify-card').length")
+        check("点「知道了」同样能关掉卡片", _after_ok >= _left and _left <= _after_ok,
+              f"点击后 {_after_ok} → 动画结束 {_left}")
+        page.evaluate("""() => document.querySelectorAll(
+            '#notify-stack .notify-card').forEach(c => c.remove())""")
+
         # 窗口尺寸记忆：用户拖出来的大小/位置要能被记住，下次原样恢复；
-        # 越界值（比屏幕还大 / 最大化时的 -8,-8）必须被丢掉，否则窗口会跑到屏幕外。
+        # 越过屏幕的尺寸 / 负坐标必须被丢弃，否则窗口会跑到屏幕外或大得离谱。
         print("\n[3d-4] 窗口尺寸记忆（下次启动按上次拖出来的大小打开）")
         try:
             import importlib.util as _ilu
@@ -923,6 +1121,67 @@ def main() -> int:
               _e2e["region"] == "越南" and _e2e["rows"] > 0 and _e2e["picked"] > 0,
               str(_e2e))
         _p2.close()
+
+        print("\n[3i] 通知设置往返（新字段要能存进配置、能原样回读，越界值要被钳住）")
+        # 2026-10-10 新增：应用内通知卡片 + 「切到别的程序时弹桌面通知」+ 卡片宽度/缩放。
+        # 这一节锁三件事，缺任何一件都会变成"设置页能点、其实没生效"：
+        #   1) POST 的四个键真的进了配置白名单并写盘（不是只在前端好看）
+        #   2) 把 /meta 的原值原样写回后能原样回读（幂等，绝不污染用户配置）
+        #   3) 脏值/越界值被钳到安全范围（脚本直接 POST 字符串也不会写坏配置）
+        import json as _j
+        import urllib.request as _u
+        from server import collector_api as _ca
+
+        def _get_json(path):
+            with _u.urlopen(base + path, timeout=20) as r:
+                return _j.loads(r.read().decode("utf-8"))
+
+        def _post_json(path, payload):
+            req = _u.Request(base + path, method="POST",
+                             data=_j.dumps(payload).encode("utf-8"),
+                             headers={"Content-Type": "application/json"})
+            with _u.urlopen(req, timeout=30) as r:
+                return _j.loads(r.read().decode("utf-8"))
+
+        _nkeys = ("notify_sound", "notify_card_width", "notify_card_scale")
+        _meta0 = _get_json("/api/collector/meta")
+        check("/meta 下发三个通知字段（原来的前台/后台分流开关已删除）",
+              all(k in _meta0 for k in _nkeys),
+              str({k: _meta0.get(k) for k in _nkeys}))
+        check("两个分流开关确实不在 /meta 里了",
+              "notify_in_app" not in _meta0
+              and "notify_desktop_when_unfocused" not in _meta0)
+
+        _back = {k: _meta0[k] for k in _nkeys}          # 原值原样写回
+        _saved = _post_json("/api/collector/settings", _back)
+        check("POST /settings 收下这三个键（写回原值，不改用户配置）",
+              _saved.get("ok") is True
+              and all(k in (_saved.get("saved") or []) for k in _nkeys),
+              str(_saved.get("saved"))[:140])
+        _meta1 = _get_json("/api/collector/meta")
+        check("写回后 /meta 原样回读（值没被悄悄改掉）",
+              all(_meta1[k] == _back[k] for k in _nkeys),
+              str({k: (_back[k], _meta1[k]) for k in _nkeys}))
+
+        # 钳制：直接调后端纯函数 —— 把脏值 POST 上去会真的写进用户配置，所以不那样测
+        _cases = [
+            ("宽度 9999 → 720", _ca._coerce_setting("notify_card_width", 9999) == 720),
+            ("宽度 1 → 280", _ca._coerce_setting("notify_card_width", 1) == 280),
+            ("宽度 'abc' → 默认 420", _ca._coerce_setting("notify_card_width", "abc") == 420),
+            ("宽度 None → 默认 420", _ca._coerce_setting("notify_card_width", None) == 420),
+            ("宽度浮点 500.6 → 500", _ca._coerce_setting("notify_card_width", 500.6) == 500),
+            ("缩放 9 → 1.6", _ca._coerce_setting("notify_card_scale", 9) == 1.6),
+            ("缩放 0.1 → 0.8", _ca._coerce_setting("notify_card_scale", 0.1) == 0.8),
+            ("缩放 1.234 → 1.23", _ca._coerce_setting("notify_card_scale", 1.234) == 1.23),
+            ("布尔 'false' → False", _ca._coerce_setting("notify_sound", "false") is False),
+            ("布尔 '' → False", _ca._coerce_setting("notify_sound", "") is False),
+            ("布尔 'on' → True", _ca._coerce_setting("notify_sound", "on") is True),
+            ("布尔 True 原样", _ca._coerce_setting("notify_sound", True) is True),
+            ("非通知键不被动过", _ca._coerce_setting("timezone", "Asia/Shanghai")
+             == "Asia/Shanghai"),
+        ]
+        _bad = [n for n, ok in _cases if not ok]
+        check(f"脏值/越界值被钳到安全范围（{len(_cases)} 项）", not _bad, str(_bad))
 
         print("\n[4] 仪表盘自动刷新（原桌面版每 3 秒重算）")
         goto("dashboard")

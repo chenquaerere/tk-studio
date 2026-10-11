@@ -28,6 +28,7 @@ import requests
 
 from .models import VideoInfo, ContentType
 from .logger import log
+from .urls import short_url
 from .abogus import ABogus, BrowserFingerprintGenerator
 
 # ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@ class DouyinClient:
                 if resp.url:
                     return resp.url
         except Exception as e:
-            log.debug(f"[douyin] 短链跳转失败 {url[:50]}: {e}")
+            log.debug(f"[douyin] 短链跳转失败 {short_url(url)}: {e}")
         return url
 
     @staticmethod
@@ -253,7 +254,7 @@ class DouyinClient:
                 if d:
                     return d
             except Exception as e:
-                log.debug(f"[douyin] 分享页解析失败 {url[:60]}: {e}")
+                log.debug(f"[douyin] 分享页解析失败 {short_url(url)}: {e}")
         return None
 
     # ==================================================================
@@ -269,12 +270,12 @@ class DouyinClient:
         # 1) 短链 -> 标准链接
         canonical = self.resolve_short_url(url)
         if canonical != url:
-            log.info(f"[douyin] 短链: {url[:50]} -> {canonical[:70]}")
+            log.info(f"[douyin] 短链: {short_url(url)} -> {short_url(canonical)}")
             url = canonical
 
         aweme_id = self.extract_aweme_id(url)
         if not aweme_id:
-            log.warning(f"[douyin] 无法从链接提取作品 ID: {url[:80]}")
+            log.warning(f"[douyin] 无法从链接提取作品 ID: {short_url(url)}")
             return None
 
         # 2) detail API (主路径)
@@ -306,7 +307,7 @@ class DouyinClient:
 
         err = get_last_error() or "detail API 失败 / 无可用素材地址"
         _set_last_error(f"抖音解析失败: {err}")
-        log.error(f"[douyin] 解析放弃: {url[:80]} ({err})")
+        log.error(f"[douyin] 解析放弃: {short_url(url)} ({err})")
         return None
 
     # ==================================================================

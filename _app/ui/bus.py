@@ -73,12 +73,19 @@ _notify_lock = threading.Lock()
 _MAX_NOTIFICATIONS = 50
 
 
-def notify(message: str, level: str = "info") -> None:
-    """记录一条需要提示用户的信息（info/ok/warn/error）。"""
+def notify(message: str, level: str = "info", card: bool = False) -> None:
+    """记录一条需要提示用户的信息（info/ok/warn/error）。
+
+    card=True 用于「任务完成」这类值得留一眼的消息：界面在前台时渲染成
+    界面右下角的通知卡片（而不是一闪而过的 toast），窗口不在前台时改弹
+    桌面浮层。进度类短消息（如「正在解析 3/20」）保持 card=False，
+    仍然只走 toast —— 否则每解析一条就堆一张卡片。
+    """
     with _notify_lock:
         _notifications.append({
             "message": str(message),
             "level": level,
+            "card": bool(card),
             "ts": time.time(),
         })
         if len(_notifications) > _MAX_NOTIFICATIONS:

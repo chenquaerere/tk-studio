@@ -46,9 +46,6 @@ def _load_cfg() -> dict:
     return _c.load()
 
 
-def _save_cfg(cfg: dict) -> None:
-    import watermark.core.config as _c
-    return _c.save(cfg)
 
 
 try:
@@ -127,10 +124,12 @@ def get_settings():
     c = core()
     values = c.settings_values()
     # v4.0.1：lan_password 已移除
+    # 顺序必须与 services.settings_values() 一一对应；末尾两项是补回来的
+    # 「保存了却读不回」的字段（video_skip_similar / face_work_side）。
     keys = ["output_root", "date_folder", "face_enhance", "tile", "half",
             "video_encoder", "video_crf", "interpolate", "skip_existing",
             "keep_frames", "max_output_size", "video_max_side", "beep_on_done",
-            "lan_access"]
+            "lan_access", "video_skip_similar", "face_work_side"]
     return {"values": dict(zip(keys, values)), "raw": _load_cfg()}
 
 
@@ -157,7 +156,10 @@ async def set_settings(payload: dict):
     for name in order:
         key = alias[name]
         args.append(src.get(key, src.get(name, cur.get(key))))
-    return {"message": c.settings_save(*args)}
+    msg = c.settings_save(*args)
+    # 输出目录可能变了：白名单（/api/file 的 403 判定）必须立刻跟着换
+    refresh_allowed_paths()
+    return {"message": msg}
 
 
 # ----------------------------------------------------------------- 任务
@@ -455,7 +457,7 @@ def tiktok_download(payload: dict):
     """启动下载任务，立即返回 job_id；进度走 SSE。"""
     c = core()
     p = payload or {}
-    if getattr(c, "_tk_worker_running", False):
+    if not c.tk_worker_begin():
         raise HTTPException(409, "已有下载任务在运行")
 
     selected = p.get("selected") or []
@@ -467,10 +469,19 @@ def tiktok_download(payload: dict):
     c._tk_pause.set()
     job = bus.create_job(JobKind.TIKTOK_DOWNLOAD, label="去水印下载",
                          cancel=c._tk_cancel, pause=c._tk_pause)
-    t = threading.Thread(target=c._tk_download_worker,
-                         args=(selected, sel_idx, out_dir, job, auto_hd),
-                         daemon=True, name=f"tk-dl-{job.id}")
-    t.start()
+
+    def _run_tk():
+        try:
+            c._tk_download_worker(selected, sel_idx, out_dir, job, auto_hd)
+        finally:
+            c.tk_worker_end()
+
+    t = threading.Thread(target=_run_tk, daemon=True, name=f"tk-dl-{job.id}")
+    try:
+        t.start()
+    except Exception:
+        c.tk_worker_end()          # 线程没起来也要把位置让出来
+        raise
     return {"job_id": job.id}
 
 
@@ -521,7 +532,10 @@ def tiktok_settings_set(payload: dict):
     args = (src.get("output_dir", cur[0]), src.get("max_concurrent", cur[1]),
             src.get("max_retries", cur[2]), src.get("quality", cur[3]),
             src.get("proxy", cur[4]))
-    return {"message": c.tk_settings_save(*args)}
+    msg = c.tk_settings_save(*args)
+    # 下载目录可能变了：白名单必须跟着换，否则新目录里的文件 /api/file 一直 403
+    refresh_allowed_paths()
+    return {"message": msg}
 
 
 # ----------------------------------------------------------------- 系统
@@ -690,10 +704,15 @@ def system_open_log_dir():
 
 @app.post("/api/system/notify")
 def system_notify(payload: dict):
-    """弹一条系统通知（**桌面居中弹窗** + 提示音）。body: {title, message, kind, sound}
+    """发一条采集通知。body: {title, message, kind, sound, timeout_ms, desktop}
 
     对应原桌面程序 `app/ui/notify.py` 的能力 —— 采集结束时提醒用户，
     这样切到别的窗口也不会漏掉「采集已完成」。**不阻塞**，立即返回。
+
+    `desktop=True`（默认）弹**桌面右下角浮层**；`desktop=False` 只播提示音。
+    窗口在前台时卡片由前端画在**程序界面**右下角（见 frontend/js/app.js 的
+    Notify 组件），此时必须传 desktop=False —— 否则通知会"跑到程序外面"，
+    这正是 2026-10-10 用户反馈的那个 bug。
     """
     from server.notifier import notify
 
@@ -708,8 +727,10 @@ def system_notify(payload: dict):
     except (TypeError, ValueError):
         timeout_ms = 9000
     sound = bool(p.get("sound", True))
+    desktop = bool(p.get("desktop", True))
 
-    ok, err = notify(title, message, kind, timeout_ms=timeout_ms, sound=sound)
+    ok, err = notify(title, message, kind, timeout_ms=timeout_ms,
+                     sound=sound, desktop=desktop)
     return {"ok": ok, "error": err}
 
 
@@ -813,7 +834,7 @@ def hd_start(payload: dict):
     if not files and not str(folder).strip():
         raise HTTPException(422, "请先选择文件或填写文件夹路径")
 
-    if c._hd_worker_running:
+    if not c.hd_worker_begin():
         raise HTTPException(409, "已有高清任务在运行")
 
     c.CANCEL.clear()
@@ -821,12 +842,23 @@ def hd_start(payload: dict):
     kind = {"image": JobKind.HD_IMAGE, "video": JobKind.HD_VIDEO}.get(mode, JobKind.HD_MIXED)
     job = bus.create_job(kind, label=f"高清-{mode}",
                          cancel=c.CANCEL, pause=c._hd_pause)
-    t = threading.Thread(
-        target=c._hd_worker,
-        args=(files, folder, img_model, video_model, img_scale, vid_scale,
-              vid_side, face, interpolate, out_root, img_max, job, mode),
-        daemon=True, name=f"hd-{job.id}")
-    t.start()
+
+    def _run_hd():
+        # 无论正常结束、取消还是抛异常，都要把「高清处理」位置让出来，
+        # 否则一次失败会让后续任务全部被 409 挡住。
+        try:
+            c._hd_worker(files, folder, img_model, video_model, img_scale,
+                         vid_scale, vid_side, face, interpolate, out_root,
+                         img_max, job, mode)
+        finally:
+            c.hd_worker_end()
+
+    t = threading.Thread(target=_run_hd, daemon=True, name=f"hd-{job.id}")
+    try:
+        t.start()
+    except Exception:
+        c.hd_worker_end()
+        raise
     return {"job_id": job.id}
 
 
@@ -1050,11 +1082,48 @@ def index():
 
 # 结果文件下载：只允许白名单目录，防止任意文件读取
 _ALLOW_PREFIXES: list[Path] = []
+# 白名单依赖的配置文件 → 它们被改动（用户换了输出目录）就要重刷，见 _is_allowed
+_ALLOW_STAMP: float = -1.0
+_ALLOW_SOURCES: list[Path] = []
+# 测试用：断言「配置改了白名单会自动重刷」时替换配置来源
+_allow_sources_override: list[Path] = []
+
+
+def _allow_config_paths() -> list[Path]:
+    """白名单依赖的配置文件：水印侧 config.json + 去水印侧 config.json。"""
+    out: list[Path] = []
+    try:
+        import watermark.core.config as _c
+        out.append(Path(_c.CONFIG_PATH))
+    except Exception:
+        pass
+    try:
+        from watermark.tiktok import config as _tk_cfg
+        out.append(Path(_tk_cfg.CONFIG_FILE))
+    except Exception:
+        pass
+    return _allow_sources_override or out
+
+
+def _allow_stamp() -> float:
+    """取所有来源配置文件的最后修改时间（没有文件算 0）。"""
+    stamp = 0.0
+    for p in _ALLOW_SOURCES:
+        try:
+            stamp = max(stamp, Path(p).stat().st_mtime)
+        except OSError:
+            continue
+    return stamp
 
 
 def refresh_allowed_paths() -> None:
-    """刷新可下载目录白名单（输出目录 / 下载目录 / 上传目录 / 项目根）。"""
-    global _ALLOW_PREFIXES
+    """刷新可下载目录白名单（输出目录 / 下载目录 / 上传目录 / 项目根）。
+
+    白名单是缓存的，所以配置一改就得重刷：用户把下载/输出目录换到别处以后，
+    新目录里的文件会一直 403（结果区看不到图、点下载报错），非得重启程序才好。
+    这属于「设置改了不生效」的同一类缺陷，2026-10-10 复盘时发现。
+    """
+    global _ALLOW_PREFIXES, _ALLOW_STAMP, _ALLOW_SOURCES
     cfg = _load_cfg()
     from watermark.tiktok.config import config as tk_config
     cands = [PROJECT_ROOT, UPLOAD_DIR,
@@ -1067,10 +1136,13 @@ def refresh_allowed_paths() -> None:
         except Exception:
             continue
     _ALLOW_PREFIXES = out
+    _ALLOW_SOURCES = _allow_config_paths()
+    _ALLOW_STAMP = _allow_stamp()
 
 
 def _is_allowed(p: Path) -> bool:
-    if not _ALLOW_PREFIXES:
+    # 配置文件的修改时间一变就重刷：换了输出目录之后不用重启程序
+    if not _ALLOW_PREFIXES or _allow_stamp() != _ALLOW_STAMP:
         refresh_allowed_paths()
     try:
         rp = p.resolve()

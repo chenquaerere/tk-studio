@@ -40,6 +40,15 @@ DB = ROOT / "data" / "tiktok_link_collector.db"
 PASS, FAIL = [], []
 
 
+# 中文 Windows 的 cmd 默认代码页是 GBK：脚本最后一行打印 ✅/❌ 会抛
+# UnicodeEncodeError —— 明明所有断言都通过了，退出码却是 1（看起来像验收失败）。
+# 这里自己把输出切成 UTF-8，任何控制台都能把结果打印完。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     (PASS if ok else FAIL).append(name)
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  —— {detail}" if detail else ""))
@@ -481,6 +490,42 @@ def main() -> int:
     vals = d.get("values", {}) if isinstance(d, dict) else {}
     check("设置接口回报 export_dir / log_dir（可编辑路径）",
           "export_dir" in vals and "log_dir" in vals, str(sorted(vals.keys())))
+
+    # 水印设置页：保存了什么就要能读回什么。
+    # video_skip_similar / face_work_side 曾经「存得进、读不回」—— 页面每次打开
+    # 都显示默认值，用户再点一次保存就把自己的选择覆盖掉（只读检查，不写配置）。
+    st, d, _ = req(port, "/api/settings")
+    wm = d.get("values", {}) if isinstance(d, dict) else {}
+    check("水印设置回报 video_skip_similar / face_work_side（保存了能读回）",
+          "video_skip_similar" in wm and "face_work_side" in wm,
+          f"keys={len(wm)} missing="
+          f"{[k for k in ('video_skip_similar', 'face_work_side') if k not in wm]}")
+
+    # 高清页「上次用的参数」：_remember_choices() 一直在存模型/档位/开关，
+    # 前端靠 /api/settings 的 raw 把它们填回表单（只读检查，不写配置）。
+    raw = d.get("raw", {}) if isinstance(d, dict) else {}
+    hd_prefs = ("image_model", "video_model", "image_scale", "video_scale",
+                "video_sharp", "video_max_side", "face_enhance", "interpolate")
+    check("/api/settings 的 raw 带着高清「上次参数」（前端据此预选）",
+          all(k in raw for k in hd_prefs),
+          f"missing={[k for k in hd_prefs if k not in raw]}")
+
+    # 「重新登录」：后端一直有这个接口，界面此前没有入口（本轮补了按钮）。
+    # 只用不存在的账号验证路由可达 —— 必须 404，绝不会动真实账号的登录态。
+    try:
+        _rq = urllib.request.Request(
+            f"http://127.0.0.1:{port}"
+            "/api/collector/accounts/__no_such_account__/reset-login",
+            data=b"{}", method="POST",
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(_rq, timeout=15)
+        relogin_code = 200
+    except urllib.error.HTTPError as e:
+        relogin_code = e.code
+    except Exception:  # noqa: BLE001
+        relogin_code = 0
+    check("POST reset-login 可达（不存在的账号必须 404）",
+          relogin_code == 404, f"HTTP {relogin_code}")
 
     print("\n[D4] 验收结束后复核数据库（零副作用）")
     after = db_counts()

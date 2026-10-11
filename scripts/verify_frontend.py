@@ -132,6 +132,24 @@ def main() -> int:
     result = {}
     checks = []
 
+    # 「倍数」的默认值不再是写死的「自动（推荐）」：HD 页现在按上次保存的
+    # 档位预选（_remember_choices → /api/settings.raw）。期望值也从接口算出来，
+    # 否则这条断言会退化成「只认写死默认值」的假门禁。
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/settings", timeout=15) as _r:
+            _raw = (json.loads(_r.read().decode("utf-8")) or {}).get("raw") or {}
+    except Exception:
+        _raw = {}
+    _scale = _raw.get("image_scale")
+    if _scale is None:
+        _scale = _raw.get("video_scale")
+    try:
+        _scale = int(_scale)
+    except (TypeError, ValueError):
+        _scale = 0
+    want_scale = {2: "2x", 4: "4x"}.get(_scale, "自动（推荐）")
+
     def expect(name, got, want):
         ok = got == want
         checks.append((name, ok, f"{got!r}（期望 {want!r}）"))
@@ -146,7 +164,8 @@ def main() -> int:
 
             expect("前端调试入口就位", js("typeof window.__TK === 'object'"), True)
             expect("倍数下拉框已填充", js("document.getElementById('hd-scale').options.length"), 3)
-            expect("倍数默认值", js("document.getElementById('hd-scale').value"), "自动（推荐）")
+            expect("倍数默认值（按上次保存的档位预选）",
+                   js("document.getElementById('hd-scale').value"), want_scale)
 
             # ---- 1. 加文件 ----
             js("""

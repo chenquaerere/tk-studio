@@ -39,6 +39,15 @@ OK, FAIL = "[PASS]", "[FAIL]"
 _failed: list[str] = []
 
 
+# 中文 Windows 的 cmd 默认代码页是 GBK：脚本最后一行打印 ✅/❌ 会抛
+# UnicodeEncodeError —— 明明所有断言都通过了，退出码却是 1（看起来像验收失败）。
+# 这里自己把输出切成 UTF-8，任何控制台都能把结果打印完。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 def check(name: str, fn):
     try:
         ok, detail = fn()
@@ -146,8 +155,14 @@ def main() -> int:
             env["PLAYWRIGHT_BROWSERS_PATH"] = str(BUNDLED)
             # 顺带断掉一起可能被当作缓存的路径
             env.pop("PLAYWRIGHT_BROWSERS_PATH_OVERRIDE", None)
+            # 中文路径要跨进程传回来：显式约定父子都用 UTF-8。
+            # 否则子进程按父进程继承的 PYTHONIOENCODING 输出、父进程却按控制台
+            # 代码页(GBK)解码，`D:\Tiktok-去水印\...` 会变成乱码，
+            # 下面的 startswith(BUNDLED) 误判成"用的不是内置内核"（踩过）。
+            env["PYTHONIOENCODING"] = "utf-8"
             r = subprocess.run([sys.executable, "-c", code], env=env,
                                capture_output=True, text=True, timeout=180,
+                               encoding="utf-8", errors="replace",
                                cwd=str(APP_DIR))
             cache_existed = (Path(fake_local) / "ms-playwright").exists()
 

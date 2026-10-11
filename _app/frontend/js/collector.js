@@ -19,9 +19,14 @@
   if (!S) { console.error("[collector] TKStudio 未初始化，脚本顺序有误"); return; }
 
   const { $, el, esc, fmtSize, api, toast, writeLog, clearLog, setBar, watchJob,
-          jobAction, PAGE_LOADERS } = S;
+          jobAction, PAGE_LOADERS, notify: Notify } = S;
 
   const API = "/api/collector";
+
+  /** 把采集 meta 里的卡片外观设置同步给界面通知组件（app.js 的 Notify）。 */
+  const syncNotifyCfg = () => {
+    if (Notify && Notify.configure) Notify.configure(S_.meta);
+  };
 
   // ------------------------------------------------------------ 小工具
 
@@ -647,13 +652,24 @@
     return `共 ${accts.length} 个账号：完成 ${ok}${bad ? `，失败 ${bad}` : ""}`;
   }
 
-  /** 弹系统通知。失败只吞掉 —— 通知不该打断采集主流程。 */
+  /** 发一条采集通知。失败只吞掉 —— 通知不该打断采集主流程。
+   *
+   *  2026-10-11 起**和去水印 / 高清修复共用同一个出口**：app.js 的
+   *  window.TKStudio.notifyCompletion（程序界面右下角卡片）。
+   *  以前这里自己判断窗口焦点、自己 POST /api/system/notify，结果
+   *  pywebview 下 hasFocus() 常为 false → 变成桌面浮层，而且和水印侧
+   *  的弹窗长得不一样。现在只有一个实现、一个位置。
+   *  提示音仍按采集设置里的 notify_sound 走。 */
   function notifySystem(title, message, kind) {
-    const sound = !S_.meta || S_.meta.notify_sound !== false;
-    api("/api/system/notify", {
-      method: "POST",
-      body: { title, message, kind, sound, timeout_ms: 9000 },
-    }).catch(() => { /* 忽略 */ });
+    const meta = S_.meta || {};
+    const sound = meta.notify_sound !== false;
+    const shared = window.TKStudio && window.TKStudio.notifyCompletion;
+    if (shared) {
+      shared(message, kind, title, { sound });
+      return;
+    }
+    // 兜底（理论上到不了）：app.js 没加载时至少画个界面内卡片
+    if (Notify) Notify.show({ title, message, kind, timeout: 9000 });
   }
 
   function afterCollectEnd(kind, j, label) {
@@ -706,7 +722,7 @@
           const failed = (j.accounts || []).filter((a) => a.status === "failed");
           S_.lastFailedIds = failed.map((a) => a.account_id).filter(Boolean);
           renderRetryBar(failed);
-          toast(`${kind === "job_done" ? "重试完成" : "重试结束"}：${summarizeJob(j)}`, 6000);
+          // 提示同样交给 afterCollectEnd 的卡片，不再另发 toast
           afterCollectEnd(kind, j, "重试");
           fetchAccounts({ render: true }).catch(() => {});
         },
@@ -757,6 +773,7 @@
       //    采集日期、账号间隔、时区标签也一起变空。
       //    教训：**共享缓存的"有没有" 绝不能当作"我该不该初始化自己的控件"的判据。**
       if (!S_.meta) S_.meta = await api(`${API}/meta`);
+      syncNotifyCfg();   // 卡片外观跟着 meta 走（宽度/缩放）
 
       // 时区标签：只读展示，无条件刷新（幂等）
       const tz = $("col-tz");
@@ -848,11 +865,9 @@
           const failed = (j.accounts || []).filter((a) => a.status === "failed");
           S_.lastFailedIds = failed.map((a) => a.account_id).filter(Boolean);
           renderRetryBar(failed);
-          // 页内提示也带上真实条数（原来只写「采集完成」，看不出采到多少）
-          const head = kind === "job_done" ? "采集完成"
-            : (kind === "job_cancelled" ? "采集已停止" : "采集失败");
-          toast(`${head}：${summarizeJob(j)}`, 8000);
-          // 失效结果页缓存 + 就地刷新 + 系统通知
+          // 完成 / 停止 / 失败的提示统一由 afterCollectEnd → notifySystem 的
+          // 界面内卡片负责（2026-10-11 去掉了这里的 toast：同一件事说两遍，
+          // 而且卡片出现时会清空 toast 文字，只剩一条空壳）。
           afterCollectEnd(kind, j, "采集");
           fetchAccounts({ render: true }).catch(() => {});
         },
@@ -1004,6 +1019,22 @@
       const opTd = el("td");
       const btnEdit = el("button", "btn btn-ghost btn-sm", "编辑");
       btnEdit.addEventListener("click", (e) => { e.stopPropagation(); openAccountDialog(a); });
+      // 「重新登录」：后端一直有 POST /accounts/{id}/reset-login（清掉这台机器上
+      // 保存的登录态），界面却没有入口 —— 登录态失效时用户只能干等。
+      const btnRelogin = el("button", "btn btn-ghost btn-sm", "重新登录");
+      btnRelogin.title = "清除这台机器保存的登录态，下次采集会重新打开浏览器登录";
+      btnRelogin.addEventListener("click", (e) => {
+        e.stopPropagation();
+        inlineConfirm(btnRelogin, async () => {
+          try {
+            await api(`${API}/accounts/${encodeURIComponent(a.account_id)}/reset-login`,
+              { method: "POST", body: {} });
+            a.login_status = "unknown";
+            toast(`已清除 @${a.username} 的登录态，下次采集会重新登录`);
+            renderAccountsTable();
+          } catch (err) { toast("清除登录态失败：" + err.message); }
+        }, `清除 @${a.username} 的登录态？下次采集需要重新登录。`);
+      });
       const btnDel = el("button", "btn btn-soft-danger btn-sm", "删除");
       btnDel.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1017,6 +1048,8 @@
         }, `删除 @${a.username}？`);
       });
       opTd.appendChild(btnEdit);
+      opTd.appendChild(document.createTextNode(" "));
+      opTd.appendChild(btnRelogin);
       opTd.appendChild(document.createTextNode(" "));
       opTd.appendChild(btnDel);
       tr.appendChild(opTd);
@@ -1199,7 +1232,9 @@
               region: $("dlg-region").value.trim(),
             },
           });
-          toast(`导入完成：新增 ${r.added}，跳过 ${r.skipped}，失败 ${r.failed}`);
+          notifySystem("导入完成",
+                       `新增 ${r.added}，跳过 ${r.skipped}，失败 ${r.failed}`,
+                       r.failed ? "warn" : "ok");
           done();
           await fetchAccounts();
         } catch (e) { toast("导入失败：" + e.message); }
@@ -1343,7 +1378,7 @@
         onDone: async (kind) => {
           btn.disabled = false;
           btn.textContent = old;
-          if (kind === "job_done") toast("昵称刷新完成");
+          if (kind === "job_done") notifySystem("昵称刷新完成", "账号昵称已更新", "ok");
           await fetchAccounts();
           $("ac-nick-tip").style.display = "none";
         },
@@ -1361,6 +1396,7 @@
     wrap.appendChild(loadingState("加载账号…"));
     try {
       if (!S_.meta) S_.meta = await api(`${API}/meta`);
+      syncNotifyCfg();
       const sel = $("ac-region");
       if (sel && sel.options.length <= 1) fillRegionSelect(sel);
       const qsel = $("ac-quick-region");
@@ -1977,7 +2013,10 @@
           }
           renderChatLinks(links);
           loadChatRecent();          // 采过的目标会冒到「最近使用」最前
-          if (kind === "job_done") toast(`采集完成：${links.length} 条链接`);
+          if (kind === "job_done") {
+            notifySystem("采集完成", `成功拿到 ${links.length} 条链接`,
+                         links.length ? "ok" : "warn");
+          }
           else if (links.length) toast(`已拿到 ${links.length} 条链接`);
         },
       });
@@ -2385,6 +2424,9 @@
 
   const CSET = {
     count: "cset-count", headless: "cset-headless", notify: "cset-notify",
+    // 通知卡片外观（2026-10-10 新增；2026-10-11 起通道固定为界面内卡片，
+    // 只剩尺寸可调）
+    notifyWidth: "cset-notify-width", notifyScale: "cset-notify-scale",
     timeout: "cset-timeout", retry: "cset-retry", interval: "cset-interval",
     proxyOn: "cset-proxy-on", proxyType: "cset-proxy-type",
     proxyHost: "cset-proxy-host", proxyPort: "cset-proxy-port",
@@ -2404,6 +2446,8 @@
       setV(CSET.count, values.default_collect_count);
       setC(CSET.headless, values.browser_headless);
       setC(CSET.notify, values.notify_sound);
+      setV(CSET.notifyWidth, values.notify_card_width);
+      setV(CSET.notifyScale, values.notify_card_scale);
       setV(CSET.timeout, values.page_load_timeout_ms);
       setV(CSET.retry, values.max_retry);
       setV(CSET.interval, values.account_interval_seconds);
@@ -2453,6 +2497,8 @@
       default_collect_count: num(CSET.count),
       browser_headless: $(CSET.headless).checked,
       notify_sound: $(CSET.notify).checked,
+      notify_card_width: num(CSET.notifyWidth),
+      notify_card_scale: num(CSET.notifyScale),
       page_load_timeout_ms: num(CSET.timeout),
       max_retry: num(CSET.retry),
       account_interval_seconds: num(CSET.interval),
@@ -2481,6 +2527,7 @@
       toast("采集设置已保存");
       if (S_.meta) S_.meta = null;
       S_.meta = await api(`${API}/meta`).catch(() => S_.meta);
+      syncNotifyCfg();
     } catch (e) {
       $("cset-msg").textContent = "保存失败：" + e.message;
       toast("保存失败：" + e.message);
@@ -3045,6 +3092,7 @@
           await loadCollectorSettings();
           if (S_.meta) S_.meta = null;
           S_.meta = await api(`${API}/meta`).catch(() => S_.meta);
+          syncNotifyCfg();
         } catch (e) {
           $("cset-msg").textContent = "恢复默认失败：" + e.message;
           toast("恢复默认失败：" + e.message);
@@ -3158,6 +3206,28 @@
     });
   }
 
+  // 「启动时检查更新」（设置项 auto_check_update）——2026-10-10 之前这个勾选框
+  // 没有任何代码读它：勾了不会检查，取消也无人理会。现在启动后静默查一次，
+  // 只有**真的发现新版本**才提示（不打扰）；手动按钮的文案行为保持不变。
+  async function autoCheckUpdate() {
+    try {
+      const { values } = await api(`${API}/settings`);
+      if (!values || values.auto_check_update === false) return;
+      const r = await api(`${API}/update-check`);
+      if (!r || !r.has_update) return;
+      if (Notify) {
+        Notify.show({
+          title: "发现新版本",
+          message: `采集模块 ${r.version}${r.url ? " · " + r.url : ""}`,
+          kind: "info",
+          timeout: 15000,
+        });
+      }
+    } catch (_) {
+      // 离线 / 未配置更新源 / 接口异常都不该在启动时打扰用户
+    }
+  }
+
   // 首屏即可绑定的（这些元素一直在 DOM 里，与视图懒加载无关）
   function bindAll() {
     bindCollectOnce();
@@ -3168,6 +3238,7 @@
     bindJobsOnce();
     refreshJobsBadge();
     setInterval(refreshJobsBadge, 3000);
+    autoCheckUpdate();
   }
 
   if (document.readyState === "loading") {

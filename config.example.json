@@ -1,32 +1,21 @@
 {
   "app": {
-    "theme": "dark",
-    "language": "zh-CN",
-    "first_run": true,
-    "last_seen_version": "",
-    "window": {
-      "width": 1440,
-      "height": 920
-    }
+    "last_seen_version": ""
   },
   "collector": {
     "default_collect_count": 4,
-    "default_date": "today",
     "timezone": "Asia/Shanghai",
-    "auto_open_browser_on_start": false,
-    "browser_type": "chromium",
     "browser_headless": true,
     "page_load_timeout_ms": 30000,
     "max_retry": 3,
-    "task_interval_ms": 2000,
-    "error_wait_ms": 3000,
     "account_interval_seconds": 4.0,
     "db_path": "data/tiktok_link_collector.db",
     "export_dir": "exports",
     "links_log_dir": "links_log",
-    "auto_save": true,
     "history_keep_days": 90,
     "notify_sound": true,
+    "notify_card_width": 420,
+    "notify_card_scale": 1.0,
     "log_level": "INFO",
     "log_dir": "logs",
     "log_keep_days": 30,
@@ -45,12 +34,7 @@
     "skip_existing": true,
     "keep_frames": false,
     "beep_on_done": true,
-    "lan_access": false,
-    "lan_password": "",
-    "tk_concurrent": 2,
-    "tk_retries": 3,
-    "tk_quality": "hd",
-    "tk_proxy": ""
+    "lan_access": false
   },
   "hd": {
     "face_enhance": false,

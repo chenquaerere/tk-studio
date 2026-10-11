@@ -97,20 +97,6 @@ class AccountCollectResult:
     diagnostics: dict = field(default_factory=dict)
 
 
-@dataclass
-class CollectTask:
-    task_id: str
-    target_date: str
-    created_at: str
-    status: str = TaskStatus.PENDING.value
-    account_count: int = 0
-    target_total: int = 0
-    actual_total: int = 0
-    success_count: int = 0
-    fail_count: int = 0
-    completed_at: Optional[str] = None
-
-
 # 状态 -> 中文文案
 STATUS_MESSAGES = {
     AccountTaskStatus.COMPLETED.value: "完成",

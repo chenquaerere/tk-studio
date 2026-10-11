@@ -159,6 +159,38 @@ class TestCollectEngine(unittest.TestCase):
         aids = sorted(r["account_id"] for r in rows)
         self.assertEqual(aids, ["a1", "a1", "a2"])
 
+    def test_stop_keeps_history_of_not_yet_collected_accounts(self):
+        """★ 回归：中途停止不得让「排在后面的账号」旧记录被删却采不回来。
+
+        2026-10-08 实机事故（docs/INCIDENT-20261008.md「采集中断留空缺」）：
+        旧实现在任务开头一次性清除**全部所选账号**的旧记录，中途关窗后
+        排在后面的账号变成「旧记录已删、新记录未采」。
+        现在清除动作下移到每个账号开始采集时，未轮到的账号必须原样保留。
+        """
+        # 第一轮：A(3) + B(3) 都入库
+        eng1 = self._engine({"A": _today_items(3, "A", 0),
+                             "B": _today_items(3, "B", 1000000)})
+        eng1.run([_acc("a1", "A", 10), _acc("a2", "B", 10)], TARGET)
+        self.assertEqual(self.db.count_videos(), 6)
+
+        # 第二轮：在 A 采到第 2 条时请求停止 → B 根本没开始
+        eng2 = self._engine({"A": _today_items(3, "A", 0),
+                             "B": _today_items(3, "B", 2000000)})
+
+        def on_progress(idx, total, uname, status, detail):
+            if uname == "A" and status == "collecting" and detail.get("collected", 0) >= 2:
+                eng2.request_stop()
+
+        s2 = eng2.run([_acc("a1", "A", 10), _acc("a2", "B", 10)], TARGET,
+                      task_id="TASK-STOP", on_progress=on_progress)
+        by_aid = {}
+        for row in self.db.query("SELECT account_id FROM videos"):
+            by_aid[row["account_id"]] = by_aid.get(row["account_id"], 0) + 1
+        # A 被替换（新采到 ≥2 条），B 的历史 3 条必须**原样保留**
+        self.assertGreaterEqual(by_aid.get("a1", 0), 2)
+        self.assertEqual(by_aid.get("a2", 0), 3)
+        self.assertEqual(s2["skipped"] >= 1, True)  # B 记为 skipped
+
     # ---- 串行 & 失败隔离 ----
     # ---- 每次抓取都重新取最新 N 条（不得因历史记录跳过）----
     def test_rerun_returns_identical_newest_n(self):
