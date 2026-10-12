@@ -76,6 +76,11 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         # 程序界面右下角，桌面浮层不再被任何完成消息使用，留着开关只会误导。
         "notify_card_width": 420,
         "notify_card_scale": 1.0,
+        # 完成提醒停留多久（秒）：0 = 不自动关闭（要手动点掉），
+        # 其余收敛到 3~120 秒。原先「窗口没焦点就常驻」的老逻辑已删 ——
+        # pywebview 下 hasFocus() 常为 false，结果每张卡片都得手点
+        # （2026-10-11 用户反馈）；窗口最小化时倒计时挂起，回来自动接着走。
+        "notify_duration": 9,
         "log_level": "INFO",
         "log_dir": "logs",
         "log_keep_days": 30,

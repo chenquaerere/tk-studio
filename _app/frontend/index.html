@@ -981,15 +981,27 @@
               <label class="chk"><input type="checkbox" id="cset-headless" /> 无头浏览器（后台运行）</label>
               <label class="chk"><input type="checkbox" id="cset-notify" /> 采集完成提示音</label>
             </div>
-            <!-- 通知卡片的大小（2026-10-10/11 用户反馈：弹窗要出现在**程序界面**
-                 右下角）。通道只有一个 —— 界面右下角的卡片，没有开关，
-                 所以这里只留尺寸；桌面浮层已不再被任何完成消息使用。 -->
+            <!-- 通知卡片的大小与停留时长（2026-10-10/11 用户反馈：弹窗要出现在
+                 **程序界面**右下角）。通道只有一个 —— 界面右下角的卡片，没有
+                 开关，所以这里只留尺寸和停留秒数（0 = 不自动关闭，要手动点掉；
+                 窗口最小化时倒计时挂起，回来自动接着走）；桌面浮层已不再被
+                 任何完成消息使用。 -->
             <div class="row">
               <label class="field">卡片宽度 (px)
                 <input type="number" id="cset-notify-width" min="280" max="720" step="10" style="width:100px;min-width:100px" />
               </label>
               <label class="field">卡片缩放
                 <input type="number" id="cset-notify-scale" min="0.8" max="1.6" step="0.05" style="width:100px;min-width:100px" />
+              </label>
+              <label class="field">提醒停留
+                <select id="cset-notify-duration" style="width:150px;min-width:150px">
+                  <option value="3">3 秒</option>
+                  <option value="5">5 秒</option>
+                  <option value="9">9 秒（默认）</option>
+                  <option value="15">15 秒</option>
+                  <option value="30">30 秒</option>
+                  <option value="0">不自动关闭（手动点掉）</option>
+                </select>
               </label>
             </div>
             <div class="row">

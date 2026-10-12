@@ -1038,6 +1038,11 @@ def g20() -> None:
     「去水印 / 高清修复」几乎总是弹到桌面右下角，而「采集链接」又是另一套长相。
     现在只保留 app.js 的 notifyCompletion()（画 #notify-stack 卡片），
     collector.js 通过 window.TKStudio 调它；两个分流开关一并删除。
+
+    缺陷（2026-10-11 用户第四次反馈）：「弹窗通知没有设置时长吗？每次都要我
+    把弹窗点掉」——同一个 hasFocus 坑的残留：窗口没焦点就 timeout=0 常驻。
+    现在卡片停留时长由设置项 notify_duration 决定（默认 9 秒，0 = 不自动关
+    闭，范围内收敛到 3~120 秒），窗口不可见时挂起倒计时、回来自动续上。
     """
     root = APP_DIR.parent
     app = (APP_DIR / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
@@ -1053,8 +1058,10 @@ def g20() -> None:
           f"app.js {app.count('function notifyCompletion(')} 处 / collector 有委托="
           + str("window.TKStudio.notifyCompletion" in col))
 
-    check("完成提醒一定画成界面内卡片，窗口不在前台时常驻",
-          "Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });" in app
+    check("完成提醒一定画成界面内卡片，而且卡片自己有停留时长（不用手点）",
+          "Notify.show({ title, message: msg, kind, timeout: Notify.durationMs() });"
+          in app
+          and "const seen = !document.hidden && document.hasFocus();" not in app
           and 'if (Number(timeout) === 0) card.classList.add("notify-sticky");' in app
           and ".notify-sticky .notify-progress { display: none; }" in css)
 
@@ -1086,6 +1093,32 @@ def g20() -> None:
           "notify_card_width" in _cconfig.DEFAULTS["collector"]
           and "notify_card_scale" in _cconfig.DEFAULTS["collector"]
           and "cset-notify-width" in html and "cset-notify-scale" in html)
+
+    check("停留时长可在设置里改：0 = 不自动关闭，否则收敛到 3~120 秒",
+          "notify_duration" in _cconfig.DEFAULTS["collector"]
+          and "notify_duration" in _ca._COLLECTOR_SETTING_KEYS
+          and "notify_duration" in example.get("collector", {})
+          and _ca._notify_duration(0) == 0 and _ca._notify_duration(9) == 9
+          and _ca._notify_duration(1) == 3 and _ca._notify_duration(999) == 120
+          and _ca._notify_duration("abc") == 9,
+          f"默认 {_cconfig.DEFAULTS['collector']['notify_duration']}s / 收敛 "
+          f"{_ca._notify_duration(1)}~{_ca._notify_duration(999)}s")
+
+    check("窗口看不见时倒计时挂起、回来自动续上（既不漏消息也不用点掉）",
+          'document.addEventListener("visibilitychange", () => {' in app
+          and "function holdCard(card) {" in app
+          and "function resumeHeld() {" in app
+          and "if (document.hidden) holdCard(card);" in app
+          and 'if (card.dataset.paused === "1") return;' in app
+          and 'if (card.dataset.paused !== "1") return;' in app)
+
+    check("时长设置真的接到界面上（下拉框 + 回填 + 保存 + 启动读取）",
+          'notifyDuration: "cset-notify-duration",' in col
+          and "notify_duration: num(CSET.notifyDuration)," in col
+          and "values.notify_duration == null ? 9" in col
+          and 'id="cset-notify-duration"' in html
+          and "const d = Number(m.notify_duration);" in app
+          and 'const d = await api("/api/collector/settings");' in app)
 
     r = subprocess.run(
         [sys.executable, "-m", "unittest", "collector.tests.test_notify_card"],

@@ -2427,6 +2427,8 @@
     // 通知卡片外观（2026-10-10 新增；2026-10-11 起通道固定为界面内卡片，
     // 只剩尺寸可调）
     notifyWidth: "cset-notify-width", notifyScale: "cset-notify-scale",
+    // 完成提醒停留秒数（0 = 不自动关闭；窗口最小化时倒计时挂起）
+    notifyDuration: "cset-notify-duration",
     timeout: "cset-timeout", retry: "cset-retry", interval: "cset-interval",
     proxyOn: "cset-proxy-on", proxyType: "cset-proxy-type",
     proxyHost: "cset-proxy-host", proxyPort: "cset-proxy-port",
@@ -2448,6 +2450,10 @@
       setC(CSET.notify, values.notify_sound);
       setV(CSET.notifyWidth, values.notify_card_width);
       setV(CSET.notifyScale, values.notify_card_scale);
+      // 下拉框：value 必须是字符串；老配置缺这个键时回退默认 9 秒，
+      // 否则会跳到第一个选项（3 秒）上。
+      const durSel = $(CSET.notifyDuration);
+      if (durSel) durSel.value = String(values.notify_duration == null ? 9 : values.notify_duration);
       setV(CSET.timeout, values.page_load_timeout_ms);
       setV(CSET.retry, values.max_retry);
       setV(CSET.interval, values.account_interval_seconds);
@@ -2499,6 +2505,7 @@
       notify_sound: $(CSET.notify).checked,
       notify_card_width: num(CSET.notifyWidth),
       notify_card_scale: num(CSET.notifyScale),
+      notify_duration: num(CSET.notifyDuration),
       page_load_timeout_ms: num(CSET.timeout),
       max_retry: num(CSET.retry),
       account_interval_seconds: num(CSET.interval),

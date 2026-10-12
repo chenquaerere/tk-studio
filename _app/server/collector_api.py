@@ -224,6 +224,10 @@ def _get_account(account_id: str) -> Account:
 # 缩放 0.8~1.6（等比放大字号与内距）。越界一律收敛，避免前端算出畸形卡片。
 NOTIFY_CARD_WIDTH_RANGE = (280, 720)
 NOTIFY_CARD_SCALE_RANGE = (0.8, 1.6)
+# 完成提醒停留秒数：0 = 不自动关闭；其余收敛到 3~120 秒
+NOTIFY_DURATION_SECONDS = 9
+NOTIFY_DURATION_MIN = 3
+NOTIFY_DURATION_MAX = 120
 
 # 通知相关的布尔开关：脚本/curl 直接 POST 字符串时必须按语义解析
 # （bool("false") == True 是个坑，2026-10-10 一并兜住）
@@ -241,6 +245,24 @@ def _clamp_number(value, low, high, default):
     return min(high, max(low, n))
 
 
+def _notify_duration(value, default: int = NOTIFY_DURATION_SECONDS) -> int:
+    """停留秒数：0（常驻，手动关闭）或 3~120；非法/负数回默认 9 秒。
+
+    窗口没焦点就常驻的老逻辑已删掉（pywebview 下 document.hasFocus()
+    常为 false，结果每张卡片都要手点）。
+    """
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    if n != n or n < 0:            # NaN / 负数
+        return default
+    n = int(round(n))
+    if n == 0:
+        return 0
+    return min(NOTIFY_DURATION_MAX, max(NOTIFY_DURATION_MIN, n))
+
+
 def _coerce_setting(key: str, value):
     """把设置值收敛到合法类型/范围。前端已经传对类型，这里兜底脚本直接 POST。"""
     if key in _NOTIFY_BOOL_KEYS:
@@ -251,6 +273,8 @@ def _coerce_setting(key: str, value):
         return int(_clamp_number(value, *NOTIFY_CARD_WIDTH_RANGE, 420))
     if key == "notify_card_scale":
         return round(_clamp_number(value, *NOTIFY_CARD_SCALE_RANGE, 1.0), 2)
+    if key == "notify_duration":
+        return _notify_duration(value)
     return value
 
 
@@ -275,6 +299,8 @@ def meta():
             c.config.get("notify_card_width", 420), *NOTIFY_CARD_WIDTH_RANGE, 420)),
         "notify_card_scale": round(_clamp_number(
             c.config.get("notify_card_scale", 1.0), *NOTIFY_CARD_SCALE_RANGE, 1.0), 2),
+        # 完成提醒停留多久（秒；0 = 不自动关闭，要手动点掉）
+        "notify_duration": _notify_duration(c.config.get("notify_duration", 9)),
         "status_messages": {
             "completed": "完成", "partial": "当日作品不足", "empty": "今日没有发现作品",
             "failed": "失败", "skipped": "已跳过", "pending": "等待中", "running": "采集中",
@@ -1297,7 +1323,7 @@ _COLLECTOR_SETTING_KEYS = [
     # 原桌面版「数据 / 日志」分组里可编辑的两个路径（此前只在「关于」页只读展示）
     "export_dir", "log_dir",
     # 通知卡片外观（2026-10-10）
-    "notify_card_width", "notify_card_scale",
+    "notify_card_width", "notify_card_scale", "notify_duration",
 ]
 
 

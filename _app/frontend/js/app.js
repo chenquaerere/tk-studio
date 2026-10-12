@@ -61,7 +61,8 @@
    * 用户反馈"通知跑到程序外面去了"。现在**只有这里一条通道**：
    * 采集链接 / 去水印 / 高清修复的完成消息都画成程序界面右下角的卡片
    * （宽度/缩放由设置驱动：notify_card_width / notify_card_scale）；
-   * 窗口不在前台时卡片常驻，不再弹桌面浮层。
+   * 停留时长由设置里的 notify_duration 决定（0 = 不自动关闭）；
+   * 窗口最小化时倒计时挂起，回来自动接着走。不再弹桌面浮层。
    * 卡片样式全部在 css/app.css（#notify-stack / .notify-card）。
    */
   const Notify = (() => {
@@ -70,6 +71,15 @@
     const DEFAULT_TIMEOUT = 9000;
     let host = null;
     let onKey = null;
+    // 自动消失时长（毫秒）；0 = 常驻，等用户点掉。由设置 notify_duration 驱动。
+    let duration = DEFAULT_TIMEOUT;
+
+    /** 设置里的秒数 → 毫秒（0 = 不自动关闭；下限 3 秒，太短看不清）。 */
+    function setDuration(sec) {
+      const s = Number(sec);
+      if (!Number.isFinite(s) || s < 0) return;
+      duration = s === 0 ? 0 : Math.max(3000, Math.round(s * 1000));
+    }
 
     function stack() {
       if (host && host.isConnected) return host;
@@ -114,6 +124,7 @@
       card.dataset.total = String(card.dataset.total || ms);
       card.dataset.left = String(ms);
       card.dataset.startedAt = String(Date.now());
+      delete card.dataset.paused;     // 重新计时：暂停标记同步清掉
       clearTimeout(Number(card.dataset.timer || 0));
       card.dataset.timer = String(setTimeout(() => close(card), ms));
       runBar(card, from, ms);
@@ -122,6 +133,8 @@
     function pause(card) {
       if (card.dataset.closing) return;
       if (card.classList.contains("notify-sticky")) return;   // 常驻卡片没有倒计时
+      if (card.dataset.paused === "1") return;   // 已经在暂停：别再扣一次时间
+      card.dataset.paused = "1";
       const total = Number(card.dataset.total || DEFAULT_TIMEOUT);
       const used = Date.now() - Number(card.dataset.startedAt || Date.now());
       const left = Math.max(400, Number(card.dataset.left || total) - used);
@@ -132,12 +145,40 @@
 
     function resume(card) {
       if (card.dataset.closing) return;
-      if (card.classList.contains("notify-sticky")) return;   // 别把常驻卡片叫醒成 9 秒卡
+      if (card.classList.contains("notify-sticky")) return;   // 别把常驻卡片叫醒成限时卡
+      if (card.dataset.paused !== "1") return;   // 没在暂停就别重启动画
+      delete card.dataset.paused;
       card.classList.remove("notify-paused");
       const total = Math.max(1, Number(card.dataset.total || DEFAULT_TIMEOUT));
       const left = Math.max(400, Number(card.dataset.left || total));
       schedule(card, left, left / total);
     }
+
+    /** 窗口被切走/最小化：挂起倒计时（记下是被谁挂起的）。 */
+    function holdCard(card) {
+      if (!card || card.dataset.closing) return;
+      if (card.classList.contains("notify-sticky")) return;
+      card.dataset.held = "1";
+      pause(card);
+    }
+
+    /** 只续上被「窗口不可见」挂起的卡片；鼠标悬停暂停的不受影响。 */
+    function resumeHeld() {
+      if (!host) return;
+      Array.from(host.children).forEach((card) => {
+        if (card.dataset.held !== "1") return;
+        delete card.dataset.held;
+        resume(card);
+      });
+    }
+
+    // 最小化/切到别的程序时不让卡片偷偷走完：回来自动接着走（用户不用手点，
+    // 也不会错过提醒）。
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) { resumeHeld(); return; }
+      if (!host) return;
+      Array.from(host.children).forEach(holdCard);
+    });
 
     function show({ title, message, kind = "info", timeout = DEFAULT_TIMEOUT } = {}) {
       const k = ICONS[kind] ? kind : "info";
@@ -193,9 +234,12 @@
         };
         document.addEventListener("keydown", onKey, true);
       }
-      // timeout === 0：常驻卡片，不自动消失（窗口不在前台时用，等用户回来看见）
+      // timeout === 0：常驻卡片，不自动消失（设置里选了「不自动关闭」）
       if (Number(timeout) === 0) card.classList.add("notify-sticky");
       else schedule(card, Math.max(1200, Number(timeout) || DEFAULT_TIMEOUT));
+      // 弹出时窗口本来就不可见（最小化/切走）：直接挂起倒计时，
+      // 等用户回来看见再走完。
+      if (document.hidden) holdCard(card);
       return card;
     }
 
@@ -209,9 +253,12 @@
         (Number.isFinite(w) && w >= 200 ? Math.round(w) : 420) + "px");
       root.style.setProperty("--notify-scale",
         String(Number.isFinite(s) && s > 0 ? s : 1));
+      const d = Number(m.notify_duration);
+      if (Number.isFinite(d)) setDuration(d);
     }
 
-    return { show, close, configure };
+    return { show, close, configure, setDuration,
+             durationMs: () => duration };
   })();
 
   function setDisabled(ids, busy) {
@@ -451,6 +498,21 @@
   }
   syncBeepOnDone();
 
+  /** 完成提醒的停留时长（采集设置 notify_duration；0 = 不自动关闭）。
+   *
+   *  设置页保存后 collector.js 会重拉 meta 并 configure()；这里再兜一次
+   *  启动读取，保证一进来就是去水印/高清页也有正确时长。
+   */
+  async function syncNotifyDuration() {
+    try {
+      const d = await api("/api/collector/settings");
+      const values = (d && d.values) || {};
+      const v = Number(values.notify_duration);
+      if (Number.isFinite(v)) Notify.setDuration(v);
+    } catch { /* 读取失败：用默认 9 秒 */ }
+  }
+  syncNotifyDuration();
+
   /** 只播提示音，不弹窗（desktop:false 明确告诉后端：别弹桌面浮层）。 */
   function beepOnce() {
     api("/api/system/notify", {
@@ -462,14 +524,16 @@
 
   /** 任务完成类消息的**唯一**出口：程序界面右下角卡片（+ 可选提示音）。
    *
-   *  窗口在前台 → 卡片 9 秒后自己消失；
-   *  窗口不在前台 / 最小化 → 卡片常驻，等用户回来看见后点「知道了」或 × 关掉。
-   *  任何情况下都不再弹桌面浮层（用户 2026-10-11 明确要求）。
+   *  停留时长 = 采集设置里的 notify_duration（默认 9 秒；0 = 不自动关闭）；
+   *  窗口最小化 / 被切走时倒计时挂起，回来自动接着走完 —— 不会漏消息，
+   *  也不用每次手动点掉（2026-10-11 用户反馈：以前窗口没焦点就常驻，
+   *  每张卡片都得手点）。任何情况下都不再弹桌面浮层。
    *  opts.sound：本次是否出声（采集侧用 notify_sound，水印侧用 beep_on_done）。 */
   function notifyCompletion(msg, kind = "info", title = "任务完成", opts = {}) {
     if (!msg) return;
-    const seen = !document.hidden && document.hasFocus();
-    Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });
+    // 时长由设置决定；不再看窗口有没有焦点 —— pywebview 下 hasFocus() 常为
+    // false，那条分支会让每张卡片都变成常驻，用户每次都得起手点掉。
+    Notify.show({ title, message: msg, kind, timeout: Notify.durationMs() });
     const sound = opts.sound === undefined ? beepOnDone : !!opts.sound;
     if (sound) beepOnce();
   }

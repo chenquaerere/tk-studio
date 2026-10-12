@@ -174,16 +174,17 @@ class TestLiveCompletionWiring(unittest.TestCase):
     def test_frontend_routes_completion_through_one_exit(self):
         self.assertIn("function notifyCompletion(", self.app)
         self.assertIn("notifyCompletion(msg, kind);", self.app)
-        # 卡片画在程序界面右下角；窗口不在前台时常驻（timeout=0）
-        self.assertIn("Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });",
-                      self.app)
-        self.assertIn("const seen = !document.hidden && document.hasFocus();", self.app)
+        # 卡片画在程序界面右下角；停留时长来自设置（notify_duration）
+        self.assertIn(
+            "Notify.show({ title, message: msg, kind, timeout: Notify.durationMs() });",
+            self.app)
         self.assertIn('if (Number(timeout) === 0) card.classList.add("notify-sticky");',
                       self.app)
         self.assertIn(".notify-sticky .notify-progress { display: none; }", self.css)
-        # 常驻卡片不能被 hover 的 pause/resume 叫醒成一个 9 秒定时卡
+        # 常驻卡片不能被 hover 的 pause/resume、也不能被「窗口不可见」的挂起
+        # 逻辑叫醒成一个限时卡（三处守卫）
         self.assertEqual(self.app.count(
-            'if (card.classList.contains("notify-sticky")) return;'), 2)
+            'if (card.classList.contains("notify-sticky")) return;'), 3)
         self.assertIn("beepOnDone", self.app)
         self.assertIn("raw.beep_on_done", self.app)
         # 老的一行 toast（连正文都写死「完成」）必须消失
@@ -305,6 +306,140 @@ class TestOneUnifiedPopup(unittest.TestCase):
         self.assertIn("notifySystem(title, summarizeJob(j), uk);", self.col)
         self.assertIn("notifyCompletion(msg, kind);", self.app)      # SSE notify
         self.assertIn('notifyCompletion(msg, n.level || "info");', self.app)
+
+
+class TestNotifyDuration(unittest.TestCase):
+    """2026-10-11：完成提醒必须有停留时长，而且能被设置。
+
+    用户原话：「弹窗通知没有设置时长吗？每次都要我把弹窗点掉」。
+    根因：notifyCompletion 按 document.hasFocus() 分流，pywebview 下它常是
+    false，于是每张卡片都走 timeout=0 的常驻分支，只能手点。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from common import config as cfgmod
+        from common import paths
+
+        cls.cfgmod = cfgmod
+        cls.root = paths.APP_ROOT / "_app"
+        cls.app = (cls.root / "frontend" / "js" / "app.js").read_text(encoding="utf-8")
+        cls.col = (cls.root / "frontend" / "js" / "collector.js").read_text(
+            encoding="utf-8")
+        cls.html = (cls.root / "frontend" / "index.html").read_text(encoding="utf-8")
+        cls.api = (cls.root / "server" / "collector_api.py").read_text(
+            encoding="utf-8")
+        cls.ex = json.loads((paths.APP_ROOT / "config.example.json").read_text(
+            encoding="utf-8"))
+
+    def test_default_and_example_config_carry_the_key(self):
+        self.assertEqual(self.cfgmod.DEFAULTS["collector"]["notify_duration"], 9)
+        self.assertEqual(self.ex["collector"]["notify_duration"], 9)
+
+    def test_key_is_saved_and_returned_by_the_api(self):
+        keys = self.api.split("_COLLECTOR_SETTING_KEYS")[1].split("]")[0]
+        self.assertIn('"notify_duration"', keys)
+        self.assertIn('"notify_duration": _notify_duration(', self.api)   # meta()
+        self.assertIn('if key == "notify_duration":', self.api)           # _coerce_setting
+
+    def test_seconds_are_coerced_to_zero_or_three_to_120(self):
+        from server.collector_api import _notify_duration
+
+        self.assertEqual(_notify_duration(0), 0)          # 0 = 不自动关闭
+        self.assertEqual(_notify_duration("0"), 0)
+        self.assertEqual(_notify_duration(1), 3)          # 太短：抬到下限
+        self.assertEqual(_notify_duration(2), 3)
+        self.assertEqual(_notify_duration(9), 9)
+        self.assertEqual(_notify_duration(15.4), 15)
+        self.assertEqual(_notify_duration(999), 120)      # 太长：压到上限
+        self.assertEqual(_notify_duration(-5), 9)         # 负数 → 默认
+        self.assertEqual(_notify_duration("abc"), 9)
+        self.assertEqual(_notify_duration(None), 9)
+
+    def test_settings_endpoint_stores_the_coerced_value(self):
+        """POST /api/collector/settings 走的是同一套收敛（端到端，不只是纯函数）。"""
+        from server import collector_api
+
+        class _Cfg:
+            def load(self):
+                pass
+
+        class _Ctx:
+            def __init__(self):
+                self.config = _Cfg()
+
+            def reset_engine(self):
+                pass
+
+        captured = {}
+        originals = (collector_api.ucfg.update, collector_api.ctx,
+                     collector_api._ensure_setting_dirs)
+        collector_api.ucfg.update = lambda name, values: captured.update(
+            {name: dict(values)})
+        collector_api.ctx = lambda: _Ctx()
+        collector_api._ensure_setting_dirs = lambda values: None
+
+        def _restore():
+            (collector_api.ucfg.update, collector_api.ctx,
+             collector_api._ensure_setting_dirs) = originals
+
+        self.addCleanup(_restore)
+
+        for posted, want in ((0, 0), (2, 3), (9, 9), (999, 120), ("abc", 9)):
+            captured.clear()
+            collector_api.set_settings({"notify_duration": posted})
+            self.assertEqual(captured["collector"]["notify_duration"], want,
+                             f"POST notify_duration={posted!r} 应存成 {want}")
+
+    def test_get_settings_reports_the_merged_default(self):
+        from server import collector_api
+
+        original = collector_api.ucfg.section
+        collector_api.ucfg.section = lambda name: dict(
+            self.cfgmod.DEFAULTS[name])
+        self.addCleanup(setattr, collector_api.ucfg, "section", original)
+
+        values = collector_api.get_settings()["values"]
+        self.assertEqual(values["notify_duration"], 9)
+
+    def test_the_popup_no_longer_waits_for_a_click_by_default(self):
+        # 老分流逻辑必须从**代码**里消失（注释里会记录这段历史，所以剥注释后再比）
+        self.assertNotIn("hasFocus", _strip_comments(self.app, style="js"))
+        self.assertIn(
+            "Notify.show({ title, message: msg, kind, timeout: Notify.durationMs() });",
+            self.app)
+        self.assertIn("function setDuration(sec) {", self.app)
+        self.assertIn("durationMs: () => duration", self.app)
+
+    def test_configure_applies_the_saved_duration(self):
+        self.assertIn("const d = Number(m.notify_duration);", self.app)
+        self.assertIn("if (Number.isFinite(d)) setDuration(d);", self.app)
+        # 启动时也读一次，保证一进来就是去水印/高清页也有正确时长
+        self.assertIn('const d = await api("/api/collector/settings");', self.app)
+        self.assertIn("const values = (d && d.values) || {};", self.app)
+        self.assertIn("const v = Number(values.notify_duration);", self.app)
+
+    def test_countdown_is_held_while_the_window_is_hidden(self):
+        """最小化/切走时倒计时挂起，回来自动接着走：不漏消息也不用点。"""
+        self.assertIn('document.addEventListener("visibilitychange", () => {',
+                      self.app)
+        self.assertIn("if (document.hidden) holdCard(card);", self.app)
+        self.assertIn("function holdCard(card) {", self.app)
+        self.assertIn("function resumeHeld() {", self.app)
+        # pause/resume 幂等：重复挂起不能重复扣时间、没暂停不能重启动画
+        self.assertIn('if (card.dataset.paused === "1") return;', self.app)
+        self.assertIn('if (card.dataset.paused !== "1") return;', self.app)
+        self.assertIn("delete card.dataset.paused;", self.app)
+
+    def test_the_duration_control_exists_and_is_wired(self):
+        html = _strip_comments(self.html, style="html")
+        self.assertIn('id="cset-notify-duration"', html)
+        for value in ("3", "5", "9", "15", "30", "0"):
+            self.assertIn(f'<option value="{value}">', html)
+        self.assertIn('notifyDuration: "cset-notify-duration",', self.col)
+        # 老配置里没有这个键 → 回填默认 9 秒，别跳到第一个选项上
+        self.assertIn("values.notify_duration == null ? 9", self.col)
+        self.assertIn("notify_duration: num(CSET.notifyDuration),", self.col)
 
 
 if __name__ == "__main__":

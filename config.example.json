@@ -16,6 +16,7 @@
     "notify_sound": true,
     "notify_card_width": 420,
     "notify_card_scale": 1.0,
+    "notify_duration": 9,
     "log_level": "INFO",
     "log_dir": "logs",
     "log_keep_days": 30,

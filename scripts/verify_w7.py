@@ -619,11 +619,21 @@ def main() -> int:
         check("app.js 只有一条完成通道：界面内卡片，不再按焦点分流到桌面浮层",
               "function notifyItem(" in _app_js
               and "function notifyCompletion(" in _app_js
-              and "Notify.show({ title, message: msg, kind, timeout: seen ? 9000 : 0 });" in _app_js
+              and "Notify.show({ title, message: msg, kind, timeout: Notify.durationMs() });" in _app_js
+              and "const seen = !document.hidden && document.hasFocus();" not in _app_js
               and 'desktop: false' in _app_js          # 只剩「只出声」的 beepOnce 会调后端的通知接口
               and "toast(msg, 4200)" in _app_js
               and "notify_desktop_when_unfocused" not in _app_js
               and "desktop: true" not in _app_js)
+        check("完成提醒的停留时长来自设置：窗口不可见时挂起、回来自动续上",
+              "let duration = DEFAULT_TIMEOUT;" in _app_js
+              and "function setDuration(sec) {" in _app_js
+              and "const d = Number(m.notify_duration);" in _app_js
+              and "durationMs: () => duration" in _app_js
+              and 'document.addEventListener("visibilitychange", () => {' in _app_js
+              and "function holdCard(card) {" in _app_js
+              and "function resumeHeld() {" in _app_js
+              and 'if (card.dataset.paused === "1") return;' in _app_js)
         _collector_js = (ROOT / "_app" / "frontend" / "js" / "collector.js").read_text(
             encoding="utf-8")
         check("采集侧也调同一个出口（不再自己 POST 桌面通知）",
