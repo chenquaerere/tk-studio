@@ -107,6 +107,16 @@ class TestRegionHelpers(unittest.TestCase):
         self.assertIn("越南", region_util.REGIONS)
         self.assertIn("缅甸", region_util.REGIONS)
 
+    def test_presets_contain_us_region(self):
+        """★ 回归（2026-10-12 用户反馈）：采集链接板块的地区要能选「美区」。
+
+        美区是**预置**地区：库里还没有美区账号时也必须出现在下拉里，
+        否则用户没有任何入口把账号标成美区。
+        """
+        self.assertIn("美区", region_util.REGIONS)
+        self.assertIn("美区", region_util.region_options())
+        self.assertIn("美区", region_util.region_options(["越南"]))
+
     def test_label_with_and_without_region(self):
         self.assertEqual(
             region_util.account_label({"username": "u1", "region": "越南"}),

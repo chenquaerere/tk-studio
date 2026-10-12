@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from datetime import datetime
@@ -42,6 +43,8 @@ from server.jobs import STORE
 from server.state import EventKind, JobKind, JobState
 
 router = APIRouter(prefix="/api/collector", tags=["collector"])
+
+log = logging.getLogger("tk.collector_api")
 
 # 前端「只看未分类」的筛选哨兵值。
 # 为什么不复用空串：HTTP query 里 `region=` 与「不传 region」无法区分，
@@ -541,25 +544,41 @@ def _nickname_worker(job, accounts: List[Account]) -> None:
         job.set_state(JobState.RUNNING)
         job.emit(EventKind.JOB_STARTED, message=f"开始获取 {len(accounts)} 个账号的昵称")
         ok = 0
+        missed = 0
         for i, acc in enumerate(accounts):
             if job.cancelled:
                 job.cancel_finish("已停止")
                 return
             try:
                 nick = collector.fetch_nickname(acc) or ""
-                if nick:
-                    c.db.set_account_display_name(acc.account_id, nick)
-                    ok += 1
-                    job.log(f"@{acc.username} → {nick}", level="ok")
+                if not nick:
+                    # ⚠️ 2026-10-12：原来只发 SSE 事件、不落文件日志，而前端又把
+                    # 日志丢掉了（log:null）——「没取到」对用户完全不可见。
+                    missed += 1
+                    job.log(f"@{acc.username} 未取到昵称（主页没有返回作品列表）",
+                            level="warn")
+                    log.warning("刷新昵称未取到：@%s", acc.username)
                 else:
-                    job.log(f"@{acc.username} 未取到昵称", level="warn")
+                    stored = bool(c.db.set_account_display_name(acc.account_id, nick))
+                    ok += 1
+                    job.log(f"@{acc.username} → {nick}"
+                            + ("" if stored else "（昵称未变化）"), level="ok")
+                    log.info("刷新昵称 %s → %s%s", acc.username, nick,
+                             "" if stored else "（未变化）")
             except Exception as exc:  # noqa: BLE001 —— 单账号失败不阻断
+                missed += 1
                 job.log(f"@{acc.username} 失败：{exc}", level="warn")
+                log.warning("刷新昵称失败：@%s %s: %s", acc.username,
+                            type(exc).__name__, exc)
             job.progress((i + 1) / max(1, len(accounts)),
                          message=f"@{acc.username}")
         job["ok"] = ok
-        job.progress(1.0, message=f"成功获取 {ok}/{len(accounts)} 个昵称")
-        job.finish(f"成功获取 {ok}/{len(accounts)} 个昵称")
+        job["missed"] = missed
+        summary = f"成功刷新 {ok}/{len(accounts)} 个昵称"
+        if missed:
+            summary += f"（{missed} 个没取到，详见日志）"
+        job.progress(1.0, message=summary)
+        job.finish(summary)
     except Exception as exc:  # noqa: BLE001
         import traceback
         job.log(traceback.format_exc(), level="error")

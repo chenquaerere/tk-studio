@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Callable, Dict, List, Optional
 
 from collector.core.models import Account, ParsedVideoItem
@@ -30,6 +31,7 @@ class ProfileCollector:
         provider,
         parser,
         initial_wait_ms: int = 4000,
+        nickname_wait_ms: int = 10000,
         scroll_wait_ms: int = 1200,
         max_scrolls: int = 30,
         idle_scrolls_before_stop: int = 4,
@@ -39,6 +41,7 @@ class ProfileCollector:
         self.provider = provider
         self.parser = parser
         self.initial_wait_ms = initial_wait_ms
+        self.nickname_wait_ms = nickname_wait_ms
         self.scroll_wait_ms = scroll_wait_ms
         self.max_scrolls = max_scrolls
         self.idle_scrolls_before_stop = idle_scrolls_before_stop
@@ -49,6 +52,13 @@ class ProfileCollector:
         数据来源与采集完全一致：首屏 `/api/post/item_list/` 响应里的
         `author.nickname` —— **无需额外接口请求**，代价就是打开一次主页。
         供「刷新昵称」功能给已有账号补昵称使用。
+
+        ⚠️ 2026-10-12 修复（用户反馈「为什么昵称刷新了还是不出来？」）：
+        原来是「导航完固定等 4 秒再去看响应」—— 冷启动/首屏晚到时 4 秒
+        不够，于是**明明能取到昵称却返回空串**，而失败在前端完全看不见。
+        现在改成有界轮询：一解析出昵称立刻返回（通常比原来更快），最多
+        等 `nickname_wait_ms`；接口始终不回时再用页面 DOM 兜底（TikTok
+        主页 `<h1 data-e2e="user-title">` 就是昵称）。
 
         返回昵称；取不到（未登录/无作品/被风控）时返回空串。
         """
@@ -70,13 +80,19 @@ class ProfileCollector:
             page = self.provider.load_profile(context, account.username,
                                               on_response=on_response)
             self.session.ensure_login(page)
-            page.wait_for_timeout(self.initial_wait_ms)
 
-            for body in bodies:
-                for item in self.parser.parse_item_list(body):
-                    if item.nickname:
-                        return item.nickname.strip()
-            return ""
+            # 有界轮询：拿到就返回，不再固定等满 4 秒
+            deadline = time.monotonic() + max(0, self.nickname_wait_ms) / 1000.0
+            while True:
+                nick = self._nickname_from_bodies(bodies)
+                if nick:
+                    return nick
+                if time.monotonic() >= deadline:
+                    break
+                page.wait_for_timeout(250)
+
+            # 兜底：item_list 一直没回（接口变动/被风控）时读页面标题
+            return self._nickname_from_dom(page)
         finally:
             try:
                 if page is not None:
@@ -87,6 +103,34 @@ class ProfileCollector:
                 context.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    # TikTok 主页标题选择器：昵称渲染在这里；副标题是用户名，用来确认
+    # 「这是一张正常主页」—— 页面出错/账号不存在时不能把提示文案当昵称。
+    _DOM_TITLE_SELECTOR = 'h1[data-e2e="user-title"]'
+    _DOM_USER_SELECTOR = 'h2[data-e2e="user-subtitle"]'
+
+    def _nickname_from_bodies(self, bodies: List[str]) -> str:
+        """从已收到的 item_list 响应里取 author.nickname（取不到返回空串）。"""
+        for body in bodies:
+            for item in self.parser.parse_item_list(body):
+                if item.nickname:
+                    return item.nickname.strip()
+        return ""
+
+    def _nickname_from_dom(self, page) -> str:
+        """接口没回时的兜底：读主页标题。
+
+        只在「确实是一张正常主页」（有用户名副标题）时才采信，且标题要短
+        得像昵称；否则返回空串 —— 绝不把错误提示写进昵称。
+        """
+        try:
+            if page.locator(self._DOM_USER_SELECTOR).count() < 1:
+                return ""
+            text = (page.locator(self._DOM_TITLE_SELECTOR).first
+                    .text_content() or "").strip()
+        except Exception:  # noqa: BLE001 —— 页面已关/选择器不支持都算取不到
+            return ""
+        return text if 0 < len(text) <= 64 else ""
 
     def fetch(self, account: Account) -> List[ParsedVideoItem]:
         """满足旧 Fetcher 协议：一次性返回全部解析结果（测试/简单场景用）。"""

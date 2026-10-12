@@ -52,6 +52,9 @@
                     （原来 app.js / collector.js 各写一套、还按窗口焦点分流：
                       在 pywebview 下 hasFocus() 常为 false，于是几乎总会弹到
                       桌面右下角，而且两个板块的弹窗长得不一样）
+  G21 「刷新昵称」真的出昵称、失败也看得见（原来「导航完固定等 4 秒」
+                   就放弃，实测单账号 9.3 秒；失败只发 SSE + 前端丢弃日志，
+                   提示还写死「账号昵称已更新」）
 """
 from __future__ import annotations
 
@@ -152,6 +155,8 @@ def g3() -> None:
                     out[t] = -1
             out["names"] = sorted(r[0] for r in
                                   c.execute("SELECT username FROM accounts"))
+            out["regions"] = {r[0]: (r[1] or "") for r in
+                              c.execute("SELECT username, region FROM accounts")}
             return out
         finally:
             c.close()
@@ -168,11 +173,20 @@ def g3() -> None:
         # 真正的不变量是：结构版本没被升过、账号名单一条不少。
         print(f"        （参考）作品 原 {a['videos']} / 副本 {b['videos']}；"
               f"任务 原 {a['collect_tasks']} / 副本 {b['collect_tasks']}")
-        check("账号数一致（账号是唯一不该被迁移/采集改动的维度）",
-              a["accounts"] == b["accounts"],
-              f"原 {a['accounts']} / 副本 {b['accounts']}")
-        check("账号名单逐一一致（含地区分类）", a["names"] == b["names"],
-              f"{len(b['names'])} 个账号")
+        # 账号也会变：用户会在新程序里加账号（例如今天加的 kiahwilhelm75），
+        # 所以「逐一相等」不是不变量 —— 真不变量是**旧库里的账号一个都没丢**，
+        # 多出来的那些是在新程序里新加的；地区改动也只作参考打印（用户会重新归类）。
+        missing = [n for n in a["names"] if n not in b["names"]]
+        extra = [n for n in b["names"] if n not in a["names"]]
+        moved = sorted(n for n in (set(a["names"]) & set(b["names"]))
+                       if a["regions"].get(n, "") != b["regions"].get(n, ""))
+        check("旧库账号一个都没丢（迁移不会删账号）", not missing,
+              (f"丢了 {missing[:5]}" if missing
+               else f"{len(a['names'])} → {len(b['names'])} 个账号"))
+        if extra:
+            print(f"        （参考）新程序里新增的账号 {len(extra)} 个：{extra[:6]}")
+        if moved:
+            print(f"        （参考）地区被重新归类的账号 {len(moved)} 个：{moved[:6]}")
         check("账号数不为 0（未被清库）", b["accounts"] > 0)
 
 
@@ -1130,6 +1144,85 @@ def g20() -> None:
     check("统一弹窗的行为 / 源码测试全绿", ok, f"实测 {tail[0][:60]}")
 
 
+def g21() -> None:
+    """G21「刷新昵称」真的出昵称，而且失败看得见（v1.4.6 修复）。
+
+    缺陷（2026-10-12 用户反馈「为什么昵称刷新了还是不出来？」）：诊断发现
+    ① `ProfileCollector.fetch_nickname()` 是「导航完固定等 4 秒，再扫一遍响应」——
+    实测单账号要 9.3 秒（含拉起浏览器），首屏晚到就返回空串，而且没有第二次机会；
+    ② 后端每账号结果只走 `job.log()`（SSE），前端 `watchJob({log:null})` 又把日志
+    丢掉、完成提示还写死「账号昵称已更新」——失败对用户完全不可见。
+
+    现在：内核改成有界轮询（拿到就返回，最多 nickname_wait_ms）+ 主页 DOM 兜底；
+    后端每账号结果写进 tk.collector_api 文件日志、概括句只报真正取到的数量；
+    前端把每账号日志接进 `#ac-nick-log`，有账号没取到就不说「已更新」并留在页面上。
+    """
+    pc = (APP_DIR / "collector" / "collect" / "profile_collector.py").read_text(encoding="utf-8")
+    api = (APP_DIR / "server" / "collector_api.py").read_text(encoding="utf-8")
+    col = (APP_DIR / "frontend" / "js" / "collector.js").read_text(encoding="utf-8")
+    html = (APP_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
+
+    check("内核不再「固定等 4 秒」：有界轮询，拿到就返回",
+          "def fetch_nickname(" in pc
+          and "nickname_wait_ms: int = 10000" in pc
+          and "deadline = time.monotonic() + max(0, self.nickname_wait_ms) / 1000.0" in pc
+          and "page.wait_for_timeout(250)" in pc
+          and "page.wait_for_timeout(self.initial_wait_ms)\n            return self._nickname_from_bodies(bodies)"
+              not in pc)
+
+    check("item_list 始终不回时用主页 DOM 兜底（且只认「确实是正常主页」）",
+          '_DOM_TITLE_SELECTOR = \'h1[data-e2e="user-title"]\'' in pc
+          and '_DOM_USER_SELECTOR = \'h2[data-e2e="user-subtitle"]\'' in pc
+          and "def _nickname_from_dom(self, page) -> str:" in pc
+          and "if page.locator(self._DOM_USER_SELECTOR).count() < 1:" in pc
+          and "return text if 0 < len(text) <= 64 else \"\"" in pc
+          and "return self._nickname_from_dom(page)" in pc)
+
+    check("作品采集主流程没被牵连（仍按 initial_wait_ms 起手）",
+          "page.wait_for_timeout(self.initial_wait_ms)" in pc
+          and "self.initial_wait_ms = initial_wait_ms" in pc)
+
+    check("后端每账号结果真的落进文件日志（不再只发 SSE）",
+          'log = logging.getLogger("tk.collector_api")' in api
+          and 'log.warning("刷新昵称未取到：@%s", acc.username)' in api
+          and 'log.warning("刷新昵称失败：@%s %s: %s"' in api
+          and 'log.info("刷新昵称 %s → %s%s"' in api)
+
+    check("概括句只报真正取到的数量，并带上没取到的个数",
+          'summary = f"成功刷新 {ok}/{len(accounts)} 个昵称"' in api
+          and 'summary += f"（{missed} 个没取到，详见日志）"' in api
+          and 'job["missed"] = missed' in api
+          and 'job["ok"] = ok' in api)
+
+    check("昵称取到但库里没变化时也说清楚（不是静默成功）",
+          "（昵称未变化）" in api and "（未变化）" in api)
+
+    check("前端把每账号日志接进界面（原来传 log:null 全丢掉）",
+          'bar: null, log: "ac-nick-log", buttons: [],' in col
+          and "log: null" not in col[col.index("async function refreshNicknames("):
+                                    col.index("\n  async function ", col.index("async function refreshNicknames("))]
+          and 'id="ac-nick-log"' in html)
+
+    check("有账号没取到就不说「账号昵称已更新」，失败/取消各有提示",
+          'notifySystem("昵称刷新完成", msg || "账号昵称已更新", bad ? "warn" : "ok");' in col
+          and '"账号昵称已更新", "ok")' not in col
+          and 'notifySystem("昵称刷新失败", msg || "任务失败", "error");' in col
+          and 'notifySystem("昵称刷新已取消", msg || "已停止", "warn");' in col
+          and "个账号没取到昵称" in col)
+
+    check("提示语不再是「3～5 秒」那种做不到的承诺",
+          "6～10 秒" in col and "3～5 秒" not in col)
+
+    r = subprocess.run(
+        [sys.executable, "-m", "unittest", "collector.tests.test_nickname_refresh"],
+        cwd=str(APP_DIR), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=180,
+    )
+    ok = r.returncode == 0 and (r.stderr or "").strip().endswith("OK")
+    tail = (r.stderr or "").strip().splitlines()[-1:] or [""]
+    check("刷新昵称的行为 / 源码测试全绿", ok, f"实测 {tail[0][:60]}")
+
+
 if __name__ == "__main__":
     print("=" * 68)
     print("W2 验收：采集内核移植")
@@ -1154,6 +1247,7 @@ if __name__ == "__main__":
     g18()
     g19()
     g20()
+    g21()
     print("\n" + "=" * 68)
     print(f"结果：{len(PASS)} PASS / {len(FAIL)} FAIL")
     if FAIL:

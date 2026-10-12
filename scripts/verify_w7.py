@@ -312,6 +312,63 @@ def main() -> int:
         check("添加行占位文案为原版「输入主页链接或 @用户名，回车添加」",
               quick["ph"] == "输入主页链接或 @用户名，回车添加", quick["ph"])
 
+        # 「刷新昵称」：入口 + 结果提示条 + 每账号日志框（v1.4.6）
+        nick_ui = page.evaluate("""() => {
+          const q = (s) => document.querySelector(s);
+          const shown = (s) => {
+            const n = q(s);
+            return !!n && getComputedStyle(n).display !== 'none';
+          };
+          const btn = q('#ac-refresh-nick'), lg = q('#ac-nick-log');
+          return {
+            tip: !!q('#ac-nick-tip'), log: !!lg, btn: !!btn && !btn.disabled,
+            logHidden: !!lg && !shown('#ac-nick-log'),
+            logIsPre: !!lg && lg.tagName === 'PRE',
+            stat: (q('#ac-stat') ? q('#ac-stat').textContent.trim() : ''),
+          };
+        }""")
+        check("账号页有「刷新昵称」入口 + 结果提示条 + 每账号日志框（默认收起）",
+              nick_ui["tip"] and nick_ui["log"] and nick_ui["btn"]
+              and nick_ui["logHidden"] and nick_ui["logIsPre"], str(nick_ui))
+        check("账号统计行显示账号总数 / 启用数（缺口数只在有缺口时出现）",
+              "个账号" in nick_ui["stat"] and "启用" in nick_ui["stat"],
+              nick_ui["stat"][:60])
+
+        # 失败必须留在页面上：把接口改成 400，点一次「刷新昵称」
+        NICK_API = "**/api/collector/accounts/refresh-nicknames"
+        n_err0 = len(errors)
+        page.route(NICK_API, lambda route: route.fulfill(
+            status=400, content_type="application/json",
+            body='{"detail": "没有需要刷新昵称的账号"}'))
+        try:
+            page.click("#ac-refresh-nick")
+            page.wait_for_timeout(500)
+            nick_err = page.evaluate("""() => {
+              const q = (s) => document.querySelector(s);
+              const shown = (s) => {
+                const n = q(s);
+                return !!n && getComputedStyle(n).display !== 'none';
+              };
+              return {
+                tip: (q('#ac-nick-tip') ? q('#ac-nick-tip').textContent.trim() : ''),
+                tipShown: shown('#ac-nick-tip'), logShown: shown('#ac-nick-log'),
+                btn: (q('#ac-refresh-nick') ? !q('#ac-refresh-nick').disabled : false),
+              };
+            }""")
+        finally:
+            page.unroute(NICK_API)
+            # 这次 mock 故意返回 400，浏览器必然记一条 Failed to load resource；
+            # 它不是应用缺陷，只把 mock 期间这类网络记录剔除，真正的 JS 报错仍会拦住。
+            for i in range(len(errors) - 1, n_err0 - 1, -1):
+                if "Failed to load resource" in errors[i]:
+                    del errors[i]
+        check("刷新昵称失败时原因留在页面上（不再只闪一个会消失的弹窗）",
+              "刷新昵称失败" in nick_err["tip"]
+              and "没有需要刷新昵称的账号" in nick_err["tip"]
+              and nick_err["tipShown"] and not nick_err["logShown"] and nick_err["btn"],
+              str(nick_err)[:160])
+
+
         print("\n[3b] 采集结果页（页头动作区 / 导出下拉 / 链接窗口 / 每次进入都重拉）")
         goto("results")
         page.wait_for_timeout(900)
@@ -1104,8 +1161,11 @@ def main() -> int:
         }""")
         check("先经「账号管理」再进「采集任务」，地区下拉仍是完整列表",
               len(_cfg["opts"]) >= 3, f"{len(_cfg['opts'])} 项 {_cfg['opts'][:4]}")
-        check("地区下拉含用户实际要选的「越南 / 缅甸」",
-              "越南" in _cfg["opts"] and "缅甸" in _cfg["opts"], str(_cfg["opts"]))
+        check("地区下拉含用户实际要选的「越南 / 缅甸 / 美区」",
+              "越南" in _cfg["opts"] and "缅甸" in _cfg["opts"]
+              and "美区" in _cfg["opts"], str(_cfg["opts"]))
+        check("新预置地区「美区」无需先有美区账号就出现在下拉里",
+              "美区" in _cfg["opts"], str(_cfg["opts"]))
         check("地区选项仍带各地区账号数（原版行为）",
               any("（" in t for t in _cfg["label"]), str(_cfg["label"][:4]))
         check("采集日期已补默认值（不再是空框）",

@@ -802,7 +802,7 @@
       if (tip && missing) {
         tip.style.display = "";
         tip.innerHTML = `有 <strong>${missing}</strong> 个账号还没有昵称，` +
-          `到「账号管理」点「刷新昵称」即可自动补齐（约 1 个账号 3～5 秒）。`;
+          `到「账号管理」点「刷新昵称」即可自动补齐（约 1 个账号 6～10 秒）。`;
       }
     } catch (e) {
       wrap.innerHTML = "";
@@ -1365,27 +1365,57 @@
     const label = ids.length ? `选中的 ${ids.length} 个账号` : "全部缺昵称的账号";
     const btn = $("ac-refresh-nick");
     const old = btn.textContent;
+    const tip = $("ac-nick-tip");
+    const lg = $("ac-nick-log");
     btn.disabled = true;
     btn.textContent = "刷新中…";
+    if (tip) { tip.style.display = ""; tip.innerHTML = `正在获取昵称（${label}）…`; }
+    if (lg) { lg.style.display = ""; lg.textContent = "等待任务…"; }
     try {
       const r = await api(`${API}/accounts/refresh-nicknames`,
         { method: "POST", body: ids.length ? { account_ids: ids } : {} });
-      $("ac-nick-tip").style.display = "";
-      $("ac-nick-tip").innerHTML = `正在获取昵称（${label}）…`;
+      // 每账号结果走 SSE 日志：以前这里传 log:null，失败原因全被丢掉，
+      // 于是「刷新了却没出昵称」在界面上一点线索都没有（用户反馈）。
       watchJob(r.job_id, {
-        bar: null, log: null, buttons: [],
+        bar: null, log: "ac-nick-log", buttons: [],
         label: "昵称",
-        onDone: async (kind) => {
+        onDone: async (kind, ev) => {
           btn.disabled = false;
           btn.textContent = old;
-          if (kind === "job_done") notifySystem("昵称刷新完成", "账号昵称已更新", "ok");
+          const msg = (ev && ev.message) || "";
+          const m = /(\d+)\s*\/\s*(\d+)/.exec(msg);
+          const okN = m ? Number(m[1]) : null;
+          const allN = m ? Number(m[2]) : null;
+          const bad = okN !== null && allN !== null && okN < allN;
+          if (kind === "job_done") {
+            notifySystem("昵称刷新完成", msg || "账号昵称已更新", bad ? "warn" : "ok");
+          } else if (kind === "job_failed") {
+            notifySystem("昵称刷新失败", msg || "任务失败", "error");
+          } else if (kind === "job_cancelled") {
+            notifySystem("昵称刷新已取消", msg || "已停止", "warn");
+          }
           await fetchAccounts();
-          $("ac-nick-tip").style.display = "none";
+          if (tip) {
+            if (bad) {
+              // 有没取到的就把结果**留在页面上**，不只闪一个会消失的弹窗
+              tip.style.display = "";
+              tip.innerHTML = `有 <strong>${allN - okN}</strong> 个账号没取到昵称` +
+                `（原因见上方日志；先确认账号主页能正常打开、没有被风控）。`;
+            } else {
+              tip.style.display = "none";
+            }
+          }
         },
       });
     } catch (e) {
       btn.disabled = false;
       btn.textContent = old;
+      // 失败原因（例如「已有采集任务在运行」）留在提示条上，不只闪一个 toast
+      if (tip) {
+        tip.style.display = "";
+        tip.innerHTML = `刷新昵称失败：<strong>${esc(e.message)}</strong>`;
+      }
+      if (lg) lg.style.display = "none";
       toast("刷新失败：" + e.message);
     }
   }
