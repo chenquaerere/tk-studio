@@ -55,6 +55,13 @@
   G21 「刷新昵称」真的出昵称、失败也看得见（原来「导航完固定等 4 秒」
                    就放弃，实测单账号 9.3 秒；失败只发 SSE + 前端丢弃日志，
                    提示还写死「账号昵称已更新」）
+  G22 站点拒绝不再等于「今日没有作品」：TikTok 返回 200 空响应 /
+                    无 itemList 键 / 页面报错时退避重试，重试用尽判 failed
+                    并回滚旧记录（原来连计数都没有 → empty → 先清后采 = 清空）
+  G23 中止任务也回滚 + 链接日志全天累计：采到一半按「停止」不再丢记录
+                    （原来 skipped 不在回滚条件里，@user1986540439405 的 3 条被清空）；
+                    当日链接日志改为去重追加（原来「按最后一次运行替换」，只勾部分
+                    账号的采集会把之前跑过的账号从日志里抹掉 → 22 账号只剩 12 个）
 """
 from __future__ import annotations
 
@@ -878,8 +885,9 @@ def g16() -> None:
     check("快照在删除之前取（删完再拍等于没拍）",
           helper.index("snapshot = self.db.snapshot_videos_for_account")
           < helper.index("removed = self.db.delete_videos_for_account"))
-    check("只有「失败且一条未采到」才回滚",
-          'if snapshot and result.status == "failed" and result.actual_count == 0:' in eng_src
+    check("失败或中止且一条未采到才回滚（v1.4.7 起纳入 skipped）",
+          'if (snapshot and result.status in ("failed", "skipped")' in eng_src
+          and "and result.actual_count == 0):" in eng_src
           and "back = self.db.restore_videos(snapshot)" in eng_src)
     check("登录态失效会熔断（后面的账号不清旧记录）",
           "self._abort_reason = \"登录态失效，任务已停止（未清除旧记录）\"" in eng_src
@@ -914,9 +922,9 @@ def g17() -> None:
     links_src = (APP_DIR / "collector" / "log" / "daily_links.py").read_text(encoding="utf-8")
     api_src = (APP_DIR / "server" / "collector_api.py").read_text(encoding="utf-8")
 
-    check("只有真的采到链接才整体替换当日链接日志",
+    check("只有真的采到链接才写入当日链接日志（v1.4.7 起去重追加）",
           "if self._run_urls:" in eng_src
-          and "summary[\"links_written\"] = self.daily_links.replace(" in eng_src)
+          and "summary[\"links_written\"] = self.daily_links.append_many(" in eng_src)
     check("没采到链接时读取并保留当日文件（不写空）",
           "kept = self.daily_links.load(day=target_date)" in eng_src
           and 'summary["links_kept"] = len(kept)' in eng_src
@@ -1223,6 +1231,142 @@ def g21() -> None:
     check("刷新昵称的行为 / 源码测试全绿", ok, f"实测 {tail[0][:60]}")
 
 
+# ───────────────────────────────────────────── G22 站点拒绝不再清空记录
+def g22() -> None:
+    """G22 `empty` 不再等于「今日没有作品」：被 TikTok 拒绝时要退避重试并保住旧记录。
+
+    缺陷（2026-10-12 用户报「采 15 个账号、每个 3 条，最终只有 12 条」）：
+    匿名访问时 TikTok 对 `/api/post/item_list/` 返回 200 + 0 字节（或只有
+    `TotalCount:0` 的 JSON），页面渲染「Something went wrong」。此前这种响应
+    连计数都没有，一个作品都没采到就走 `_status_for` → `empty`，
+    而回滚只对 `failed` 生效 —— 一次「先清后采」就把 11 个账号的旧记录清成了空白。
+
+    现在：采集器把这种响应识别为站点拒绝并抛 `SiteBlocked`，引擎按 3/6/12 秒
+    退避重试，重试用尽判 `failed` → 命中既有回滚；只有「收到正常响应但确实
+    没有作品」才保留 `empty` 语义。
+    """
+    exc = (APP_DIR / "collector" / "collect" / "exceptions.py").read_text(encoding="utf-8")
+    pc = (APP_DIR / "collector" / "collect" / "profile_collector.py").read_text(encoding="utf-8")
+    en = (APP_DIR / "collector" / "collect" / "engine.py").read_text(encoding="utf-8")
+    api = (APP_DIR / "server" / "collector_api.py").read_text(encoding="utf-8")
+
+    check("新增 SiteBlocked 异常（继承 CollectorError）",
+          "class SiteBlocked(CollectorError):" in exc
+          and "from .exceptions import RateLimited, SiteBlocked" in pc)
+
+    check("空响应 / 无作品列表键的响应都被计数（原来直接不计）",
+          'diag["item_list_responses"] += 1' in pc
+          and 'diag["item_list_empty"] += 1' in pc
+          and 'diag["item_list_refused"] += 1' in pc
+          and 'getattr(self.parser, "item_list_keys",' in pc)
+
+    check("限流检测排在站点拒绝之前（429 有自己的退避，不能被当成拒绝）",
+          pc.index('if diag.get("rate_limited") and diag["found"] == 0:')
+          < pc.index("raise SiteBlocked(")
+          and 'if diag.get("rate_limited"):\n            return False' in pc)
+
+    check("拒绝判定覆盖四种情况（页面报错 / 无响应 / 空响应 / 无列表键）",
+          "def _looks_blocked(diag: Dict) -> bool:" in pc
+          and '_PAGE_ERROR_MARKERS = ("something went wrong", "sorry about that")' in pc
+          and "def _page_error(self, page) -> bool:" in pc
+          and "return (empty + refused) >= responses" in pc)
+
+    check("引擎遇到站点拒绝会退避重试，重试用尽判 failed（旧记录回滚）",
+          "from collector.collect.exceptions import LoginRequired, RateLimited, SiteBlocked" in en
+          and "except SiteBlocked as exc:" in en
+          and en.index("except RateLimited as exc:")
+          < en.index("except SiteBlocked as exc:")
+          < en.index("except Exception as exc:  # noqa: BLE001 —— 单账号失败不得阻断整体")
+          and "delay = min(15.0, 3.0 * (2 ** self._blocked_backoff_level))" in en
+          and '"blocked": 0,' in en
+          and 'summary["blocked"] += 1' in en)
+
+    check("回滚条件只认 failed/skipped（v1.4.3 契约：真没作品的 empty 照样替换）",
+          'if (snapshot and result.status in ("failed", "skipped")' in en
+          and "and result.actual_count == 0):" in en)
+
+    check("汇总文案说清「被 TikTok 拒绝」与「未采到新作品，未丢失」",
+          "个账号被 TikTok 拒绝返回作品列表" in api
+          and "已回滚保留 {s['restored']} 条旧记录（本次未采到新作品，未丢失）" in api
+          and "（采集失败且无新记录，未丢失）" not in api)
+
+    r = subprocess.run(
+        [sys.executable, "-m", "unittest", "collector.tests.test_site_blocked"],
+        cwd=str(APP_DIR), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=180,
+    )
+    ok = r.returncode == 0 and (r.stderr or "").strip().endswith("OK")
+    tail = (r.stderr or "").strip().splitlines()[-1:] or [""]
+    check("站点拒绝的行为 / 源码测试全绿", ok, f"实测 {tail[0][:60]}")
+
+
+
+def g23() -> None:
+    """G23 中止任务也回滚 + 当日链接日志全天累计。
+
+    缺陷（2026-10-12 22:01，用户报「怎么拿的链接账号都不全」）：
+    ① 采到一半点「停止」时该账号的旧记录已经被「先清后采」删除，而停止路径给的
+       状态是 `skipped` —— 不在回滚条件里，@user1986540439405 的 3 条被清空且没写回
+       （事后从 10-12 10:34 的自动备份恢复）；
+    ② 当日链接日志是「按最后一次运行整体替换」，一次只勾了 15 个越南账号的采集
+       把之前跑过的美区/缅甸账号从 `links_log/20261012.txt` 里整个抹掉
+       （库里 22 个账号 × 3 条，日志里只剩 12 个账号 36 条）。
+
+    现在：回滚条件纳入 `skipped`（`empty` 仍保持「真没作品就替换」的语义）；
+    链接日志改用 `append_many` 去重追加，只增不减。
+    """
+    en = (APP_DIR / "collector" / "collect" / "engine.py").read_text(encoding="utf-8")
+    dl = (APP_DIR / "collector" / "log" / "daily_links.py").read_text(encoding="utf-8")
+    api = (APP_DIR / "server" / "collector_api.py").read_text(encoding="utf-8")
+    tr = (APP_DIR / "collector" / "tests" / "test_replacement_rollback.py").read_text(encoding="utf-8")
+    te = (APP_DIR / "collector" / "tests" / "test_engine.py").read_text(encoding="utf-8")
+    ts = (APP_DIR / "collector" / "tests" / "test_site_blocked.py").read_text(encoding="utf-8")
+
+    i_cond = en.find('if (snapshot and result.status in ("failed", "skipped")')
+    i_amt = en.find("and result.actual_count == 0):", i_cond if i_cond >= 0 else 0)
+    check("中止（skipped）也回滚旧记录，empty 仍保持替换式语义",
+          i_cond >= 0 and i_amt > i_cond
+          and '"empty"' not in en[i_cond:i_amt])
+
+    i_skip = en.find('elif result.status == "skipped":')
+    i_fail = en.find('elif result.status == "failed":')
+    check("skipped 计入 summary（原来该状态不进任何计数器）",
+          i_skip >= 0 and i_fail > i_skip
+          and 'summary["skipped"] += 1' in en[i_skip:i_fail])
+
+    check("当日链接日志改为去重追加（引擎不再整体替换）",
+          "self.daily_links.append_many(" in en
+          and "self.daily_links.replace(" not in en)
+
+    check("daily_links 两种写入语义并存：append_many 追加 / replace 快照",
+          "def append_many(self, urls: Iterable[str], day: Optional[str] = None) -> int:" in dl
+          and "全天累计" in dl
+          and 'with open(path, "w", encoding="utf-8") as f:' in dl)
+
+    check("结果文案能看出「中止 N 个账号」",
+          'parts.append(f"中止 {s[\'skipped\']}")' in api)
+
+    check("新用例在位（累计语义 / 中止回滚 / 中止文案 / 源码契约）",
+          "def test_daily_links_log_accumulates_across_runs(self):" in te
+          and "def test_daily_links_log_dedupes_repeated_urls(self):" in te
+          and "class TestStoppedAccountRollsBack(unittest.TestCase):" in tr
+          and "def test_successful_run_appends_link_log(self):" in tr
+          and "def test_skipped_line(self):" in ts
+          and 'self.assertIn(\'result.status in ("failed", "skipped")\', loop)' in tr)
+
+    r = subprocess.run(
+        [sys.executable, "-m", "unittest",
+         "collector.tests.test_replacement_rollback",
+         "collector.tests.test_engine",
+         "collector.tests.test_site_blocked"],
+        cwd=str(APP_DIR), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=300,
+    )
+    ok = r.returncode == 0 and (r.stderr or "").strip().endswith("OK")
+    tail = (r.stderr or "").strip().splitlines()[-1:] or [""]
+    check("中止回滚 / 链接日志累计 的行为与源码测试全绿", ok, f"实测 {tail[0][:60]}")
+
+
 if __name__ == "__main__":
     print("=" * 68)
     print("W2 验收：采集内核移植")
@@ -1248,6 +1392,8 @@ if __name__ == "__main__":
     g19()
     g20()
     g21()
+    g22()
+    g23()
     print("\n" + "=" * 68)
     print(f"结果：{len(PASS)} PASS / {len(FAIL)} FAIL")
     if FAIL:

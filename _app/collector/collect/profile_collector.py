@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional
 
 from collector.core.models import Account, ParsedVideoItem
 
-from .exceptions import RateLimited
+from .exceptions import RateLimited, SiteBlocked
 
 # on_item 回调：返回 True 继续采集，False 停止本账号
 ItemCallback = Callable[[ParsedVideoItem], bool]
@@ -143,6 +143,10 @@ class ProfileCollector:
         diag = {
             "found": 0,
             "item_list_requests": 0,
+            "item_list_responses": 0,   # 所有 item_list 响应（含空响应，v1.4.7）
+            "item_list_empty": 0,       # 200 但 0 字节：TikTok 拒绝返回的特征（v1.4.7）
+            "item_list_refused": 0,     # 有 body 但没有 itemList 键（TikTok 拒绝形状）
+            "page_error": False,        # 页面渲染出「Something went wrong」（v1.4.7）
             "scrolls": 0,
             "stopped_by_callback": False,
             "rate_limited": False,
@@ -165,10 +169,20 @@ class ProfileCollector:
                         if resp.status == 429:
                             diag["rate_limited"] = True
                             return
+                        diag["item_list_responses"] += 1
                         body = resp.text()
-                        if body:
-                            queue.append(body)
-                            diag["item_list_requests"] += 1
+                        if not body:
+                            # 200 + 空响应：TikTok 匿名访问被拒的典型特征（v1.4.7）
+                            diag["item_list_empty"] += 1
+                            return
+                        queue.append(body)
+                        diag["item_list_requests"] += 1
+                        if not any(f'"{k}"' in body
+                                   for k in getattr(self.parser, "item_list_keys",
+                                                    ("itemList",))):
+                            # 有 body 却没有作品列表键 —— 同样是拒绝形状（v1.4.7）。
+                            # 键名取自 parser，接口改名时这里自动跟随。
+                            diag["item_list_refused"] += 1
                 except Exception:
                     pass
 
@@ -219,9 +233,22 @@ class ProfileCollector:
                 else:
                     idle = 0
 
-            # 限流检测：一个作品都没采到且命中 429 → 抛退避异常，交由引擎指数退避
+            # 限流检测：一个作品都没采到且命中 429 → 抛退避异常，交由引擎指数退避。
+            # 必须排在站点拒绝检测之前：429 有专门的退避策略，且它同样
+            # 「收不到任何响应」，否则会被误判成站点拒绝。
             if diag.get("rate_limited") and diag["found"] == 0:
                 raise RateLimited("触发 TikTok 限流(HTTP 429)，需退避等待后重试")
+
+            # 站点拒绝检测（v1.4.7，2026-10-12 用户报「采 15 个账号只回 12 条」）：
+            # 匿名访问时 TikTok 会对主页作品列表返回 200 + 空响应，页面渲染
+            # 「Something went wrong」—— 此前被判成 empty（今日没有作品），
+            # 替换式记录随即把旧记录清空，表现为「采集完链接反而变少了」。
+            # 这里显式抛出，交由引擎退避重试；重试用尽才判失败并回滚旧记录。
+            if diag["found"] == 0:
+                diag["page_error"] = self._page_error(page)
+                if self._looks_blocked(diag):
+                    raise SiteBlocked(
+                        "TikTok 未返回作品列表（空响应/页面报错，疑似风控或需要登录）")
 
             return diag
         finally:
@@ -233,3 +260,40 @@ class ProfileCollector:
                 context.close()
             except Exception:
                 pass
+
+    # ---- 站点拒绝判定（v1.4.7） ----
+    # 正常主页不会出现这两句；出现即说明 TikTok 自己都认为这次请求失败了。
+    _PAGE_ERROR_MARKERS = ("something went wrong", "sorry about that")
+
+    def _page_error(self, page) -> bool:
+        """页面是否渲染出 TikTok 的错误提示。"""
+        try:
+            text = page.evaluate(
+                "() => (document.body ? document.body.innerText : '')") or ""
+        except Exception:  # noqa: BLE001 —— 页面已关/环境不支持都算「看不出来」
+            return False
+        low = str(text).lower()
+        return any(m in low for m in self._PAGE_ERROR_MARKERS)
+
+    @staticmethod
+    def _looks_blocked(diag: Dict) -> bool:
+        """判断「一个作品都没采到」是不是被站点拒绝了（而不是账号真的没作品）。
+
+        命中任一即视为拒绝（此时应退避重试，而不是当作「今日没有作品」）：
+        - 页面渲染出 TikTok 的错误提示；
+        - 压根没收到 item_list 响应（页面加载异常）；
+        - 收到的响应要么是 0 字节、要么没有作品列表键
+          （正常响应一定带 itemList，哪怕是空数组）。
+        只有「收到了正常响应但一个作品都没有」才返回 False —— 那才是真的
+        没有作品，交给替换式记录规则处理。
+        """
+        if diag.get("page_error"):
+            return True
+        if diag.get("rate_limited"):
+            return False   # 限流走独立分支（RateLimited），不按站点拒绝处理
+        responses = int(diag.get("item_list_responses", 0) or 0)
+        if responses <= 0:
+            return True
+        empty = int(diag.get("item_list_empty", 0) or 0)
+        refused = int(diag.get("item_list_refused", 0) or 0)
+        return (empty + refused) >= responses

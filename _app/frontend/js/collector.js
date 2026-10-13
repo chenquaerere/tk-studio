@@ -2462,6 +2462,8 @@
     timeout: "cset-timeout", retry: "cset-retry", interval: "cset-interval",
     proxyOn: "cset-proxy-on", proxyType: "cset-proxy-type",
     proxyHost: "cset-proxy-host", proxyPort: "cset-proxy-port",
+    // 代理认证（2026-10-13）：付费代理/机场几乎都要求账号密码
+    proxyUser: "cset-proxy-user", proxyPass: "cset-proxy-pass",
     logLevel: "cset-loglevel", tz: "cset-tz",
     chatCount: "cset-chat-count", histKeep: "cset-histkeep",
     logKeep: "cset-logkeep", autoUpdate: "cset-autoupdate",
@@ -2469,6 +2471,102 @@
     exportDir: "cset-export-dir", logDir: "cset-log-dir",
     repo: "cset-repo", updateUrl: "cset-update-url",
   };
+
+  // ---------------------------------------------------------------- 代理
+  // 「测试连通」与「自动检测」都必须拿**屏幕上当前填的值**去测。
+  // 2026-10-13 修的坑：旧版测试端点不接收参数、只读已保存配置，用户改完
+  // 主机/端口没点保存就点测试，测的还是空配置 —— 必然报「未启用代理」。
+  function readProxyForm() {
+    const v = (id) => { const n = $(id); return n ? n.value : ""; };
+    return {
+      proxy_type: v(CSET.proxyType) || "http",
+      proxy_host: v(CSET.proxyHost).trim(),
+      proxy_port: v(CSET.proxyPort).trim(),
+      proxy_username: v(CSET.proxyUser).trim(),
+      proxy_password: v(CSET.proxyPass),
+    };
+  }
+
+  function setProxyMsg(text, color) {
+    const el = $("cset-proxy-msg");
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = color || "";
+  }
+
+  // 把一个候选（来自自动检测或整段粘贴解析）填进表单。
+  // 刻意**不自动保存** —— 是否落盘由用户点「保存采集设置」决定。
+  function applyProxyCandidate(item, note) {
+    const setV = (id, val) => { const n = $(id); if (n) n.value = val == null ? "" : val; };
+    setV(CSET.proxyType, item.proxy_type || "http");
+    setV(CSET.proxyHost, item.proxy_host || "");
+    setV(CSET.proxyPort, item.proxy_port || "");
+    setV(CSET.proxyUser, item.proxy_username || "");
+    setV(CSET.proxyPass, item.proxy_password || "");
+    const on = $(CSET.proxyOn);
+    if (on) on.checked = true;
+    const shown = item.display || `${item.proxy_type || "http"}://${item.proxy_host}:${item.proxy_port}`;
+    setProxyMsg(`${note ? note + "；" : ""}已填入 ${shown} —— 记得点下面的「保存采集设置」才会生效`,
+      "var(--text-2)");
+  }
+
+  function renderProxyCandidates(data) {
+    const box = $("cset-proxy-result");
+    const list = $("cset-proxy-list");
+    if (!box || !list) return;
+    const items = (data && data.all) || [];
+    list.textContent = "";
+
+    if (!items.length) {
+      const tip = document.createElement("div");
+      tip.className = "proxy-empty";
+      tip.textContent = "没有检测到本机代理。请确认代理软件正在运行；"
+        + "若它没开「系统代理」，请从软件界面查一下本地监听端口再手动填写。";
+      list.appendChild(tip);
+    }
+
+    items.forEach((it) => {
+      const row = document.createElement("div");
+      row.className = "proxy-item " + (it.ok ? "is-ok" : "is-bad");
+
+      const addr = document.createElement("span");
+      addr.className = "pi-addr";
+      addr.textContent = it.display
+        || `${it.proxy_type}://${it.proxy_host}:${it.proxy_port}`;
+      row.appendChild(addr);
+
+      const meta = document.createElement("span");
+      meta.className = "pi-meta pi-grow";
+      const bits = [it.label || ""];
+      if (it.ok) {
+        if (it.exit_ip) bits.push(`出口 IP ${it.exit_ip}`);
+        if (it.latency_ms != null) bits.push(`${it.latency_ms} ms`);
+        if (it.note) bits.push(it.note);
+      } else if (it.error) {
+        meta.classList.add("pi-err");
+        bits.push(it.error);
+      }
+      meta.textContent = bits.filter(Boolean).join(" · ");
+      row.appendChild(meta);
+
+      const use = document.createElement("button");
+      use.className = "btn btn-soft-primary btn-sm";
+      use.textContent = "使用";
+      use.addEventListener("click", () => applyProxyCandidate(it));
+      row.appendChild(use);
+
+      list.appendChild(row);
+    });
+
+    box.classList.remove("hidden");
+
+    const okCount = items.filter((i) => i.ok).length;
+    let msg = `检测完成：发现 ${items.length} 个候选，其中 ${okCount} 个已验证能出网`;
+    if (data && data.pac_url) {
+      msg += `；检测到 PAC 脚本 ${data.pac_url}（程序无法执行 PAC，请从代理软件里查端口）`;
+    }
+    setProxyMsg(msg, okCount ? "var(--success)" : "var(--danger-2)");
+  }
 
   async function loadCollectorSettings() {
     try {
@@ -2495,6 +2593,8 @@
       setV(CSET.proxyType, values.proxy_type || "http");
       setV(CSET.proxyHost, values.proxy_host);
       setV(CSET.proxyPort, values.proxy_port);
+      setV(CSET.proxyUser, values.proxy_username);
+      setV(CSET.proxyPass, values.proxy_password);
       setV(CSET.logLevel, values.log_level || "INFO");
       setV(CSET.exportDir, values.export_dir);
       setV(CSET.logDir, values.log_dir);
@@ -2543,6 +2643,9 @@
       proxy_type: $(CSET.proxyType).value,
       proxy_host: $(CSET.proxyHost).value.trim(),
       proxy_port: $(CSET.proxyPort).value.trim(),
+      proxy_username: $(CSET.proxyUser).value.trim(),
+      // 密码不做 trim：代理商给的密码可能首尾带空格，去掉反而连不上
+      proxy_password: $(CSET.proxyPass).value,
       log_level: $(CSET.logLevel).value,
       timezone: $(CSET.tz).value,
       chat_last_count: num(CSET.chatCount),
@@ -3136,15 +3239,70 @@
         }
       }, "恢复全部采集设置为默认值？（不影响账号与作品数据）");
     });
+    // 测试连通：提交**当前表单值**（不再读已保存配置），并做真实转发验证
     on("cset-proxy-test", "click", async () => {
-      $("cset-proxy-msg").textContent = "测试中…";
+      const btn = $("cset-proxy-test");
+      if (btn) btn.disabled = true;
+      setProxyMsg("测试中…（会真的发一次请求，最多 6 秒）");
       try {
-        const r = await api(`${API}/settings/test-proxy`, { method: "POST" });
-        $("cset-proxy-msg").textContent = r.message || (r.ok ? "可达" : "不可达");
-        $("cset-proxy-msg").style.color = r.ok ? "var(--success)" : "var(--danger-2)";
+        const r = await api(`${API}/settings/test-proxy`, {
+          method: "POST", body: readProxyForm(),
+        });
+        setProxyMsg(r.message || (r.ok ? "代理可用" : "代理不可用"),
+          r.ok ? "var(--success)" : "var(--danger-2)");
       } catch (e) {
-        $("cset-proxy-msg").textContent = "测试失败：" + e.message;
-        $("cset-proxy-msg").style.color = "var(--danger-2)";
+        setProxyMsg("测试失败：" + e.message, "var(--danger-2)");
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // 自动检测本机代理：环境变量 + Windows 系统代理/PAC + 常见端口，
+    // 每个候选都由后端做一次真实转发验证后列出来，用户点「使用」才填入。
+    on("cset-proxy-detect", "click", async () => {
+      const btn = $("cset-proxy-detect");
+      if (btn) btn.disabled = true;
+      setProxyMsg("正在检测本机代理…（要逐个验证能不能真的出网，最多十几秒）");
+      try {
+        const r = await api(`${API}/settings/detect-proxy`, { method: "POST" });
+        renderProxyCandidates(r);
+      } catch (e) {
+        setProxyMsg("检测失败：" + e.message, "var(--danger-2)");
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // 整段粘贴：优先读剪贴板；读不到就解析「主机」框里已有的内容
+    // （用户常把 http://user:pass@host:port 整串直接贴进主机框）。
+    on("cset-proxy-paste", "click", async () => {
+      let raw = "";
+      try {
+        raw = (await navigator.clipboard.readText()) || "";
+      } catch {
+        raw = "";
+      }
+      if (!raw.trim()) raw = ($(CSET.proxyHost)?.value || "").trim();
+      if (!raw.trim()) {
+        toast("剪贴板读不到内容，请把代理地址粘贴到「主机」框后再点");
+        return;
+      }
+      try {
+        const r = await api(`${API}/settings/parse-proxy`, {
+          method: "POST", body: { url: raw.trim() },
+        });
+        if (!r.ok || !r.parsed) {
+          setProxyMsg(r.message || "无法解析该地址", "var(--danger-2)");
+          return;
+        }
+        const p = r.parsed;
+        applyProxyCandidate({
+          proxy_type: p.proxy_type, proxy_host: p.proxy_host, proxy_port: p.proxy_port,
+          proxy_username: p.proxy_username, proxy_password: p.proxy_password,
+          display: `${p.proxy_type}://${p.proxy_host}:${p.proxy_port}`,
+        }, p.note);
+      } catch (e) {
+        setProxyMsg("解析失败：" + e.message, "var(--danger-2)");
       }
     });
     on("cset-backup", "click", async () => {
@@ -3282,6 +3440,9 @@
     document.addEventListener("DOMContentLoaded", bindAll);
   } else { bindAll(); }
 
-  // 给外部调试留个口子
-  window.TKCollector = { S: S_, loadAccounts, loadCollect, loadResults, loadDaily, loadJobs };
+  // 给外部调试留个口子（v1.5.0 起 inlineConfirm 也一并导出：
+  // app.js 先于本文件加载，它需要同一套内联二次确认 ——
+  // 全工程禁原生二次确认框，verify_w4 有门禁盯着，别另写一份）
+  window.TKCollector = { S: S_, loadAccounts, loadCollect, loadResults, loadDaily, loadJobs,
+                         inlineConfirm };
 })();

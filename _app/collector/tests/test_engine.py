@@ -323,7 +323,7 @@ class TestCollectEngine(unittest.TestCase):
         self.assertEqual(by["A"].actual_count, 2)
         self.assertEqual(by["B"].actual_count, 4)
 
-    # ---- 每日链接日志集成（替换式） ----
+    # ---- 每日链接日志集成（v1.4.7 起：全天累计，去重追加） ----
     def test_daily_links_log_written(self):
         from collector.log.daily_links import DailyLinksLog
         log = DailyLinksLog(os.path.join(self.tmp, "links_log"))
@@ -332,17 +332,35 @@ class TestCollectEngine(unittest.TestCase):
         urls = log.load(TARGET)
         self.assertEqual(len(urls), 4)
 
-    def test_daily_links_log_replaced_by_last_run(self):
+    def test_daily_links_log_accumulates_across_runs(self):
+        """只跑部分账号的一次采集，不能把之前跑过的账号从当日日志里抹掉。
+
+        2026-10-12 用户反馈「链接日志里账号不全」：替换式写法下，15 个越南账号
+        跑完，当日文件里早先跑过的美区/缅甸账号被整个覆盖掉（19 → 12 个账号）。
+        """
         from collector.log.daily_links import DailyLinksLog
         log = DailyLinksLog(os.path.join(self.tmp, "links_log"))
         # 第一次：4 条
         eng1 = self._engine({"demo_alpha": _today_items(4)}, daily_links=log)
         eng1.run([_acc("a1", "demo_alpha", 10)], TARGET)
         self.assertEqual(len(log.load(TARGET)), 4)
-        # 第二次：只有 2 条 → 按最后一次替换，文件变为 2 条（不是累计 6）
-        eng2 = self._engine({"demo_alpha": _today_items(2)}, daily_links=log)
+        # 第二次：另一批 2 条（不同 video_id）→ 累计 6 条，不是被替换成 2 条
+        eng2 = self._engine({"demo_alpha": _today_items(2, id_offset=1000)},
+                            daily_links=log)
         eng2.run([_acc("a1", "demo_alpha", 10)], TARGET, task_id="TASK-X")
-        self.assertEqual(len(log.load(TARGET)), 2)
+        urls = log.load(TARGET)
+        self.assertEqual(len(urls), 6, "第二次采集必须追加，而不是覆盖")
+        self.assertEqual(len(set(urls)), 6)
+
+    def test_daily_links_log_dedupes_repeated_urls(self):
+        """同一条链接重复采集只记一次，links_written 只数新增。"""
+        from collector.log.daily_links import DailyLinksLog
+        log = DailyLinksLog(os.path.join(self.tmp, "links_log"))
+        eng = self._engine({"demo_alpha": _today_items(4)}, daily_links=log)
+        eng.run([_acc("a1", "demo_alpha", 10)], TARGET)
+        s = eng.run([_acc("a1", "demo_alpha", 10)], TARGET, task_id="TASK-Y")
+        self.assertEqual(len(log.load(TARGET)), 4)
+        self.assertEqual(s["links_written"], 0)
 
 
 class TestPinnedItemsSkipped(unittest.TestCase):

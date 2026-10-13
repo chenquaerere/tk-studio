@@ -117,20 +117,25 @@ def port_in_use(port: int) -> bool:
     return False
 
 
-def pick_free_port(lo: int = 7860, hi: int = 7879) -> int:
+def pick_free_port(lo: int = 7860, hi: int = 7879, exclude=()) -> int:
+    """挑一个空闲端口。``exclude`` 用于同一进程内连续挑两个端口（HTTP + HTTPS）。"""
     for p in range(lo, hi + 1):
+        if p in exclude:
+            continue
         if not port_in_use(p):
             return p
     raise RuntimeError(f"{lo}-{hi} 端口全部被占用，请关闭其他实例后重试")
 
 
-def write_runtime(port: int, host: str) -> None:
+def write_runtime(port: int, host: str, extra=None) -> None:
     try:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        PORT_FILE.write_text(json.dumps(
-            {"port": port, "host": host, "pid": os.getpid(),
-             "version": _version(), "time": time.strftime("%Y-%m-%d %H:%M:%S")},
-            ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = {"port": port, "host": host, "pid": os.getpid(),
+                   "version": _version(), "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if extra:
+            payload.update(extra)
+        PORT_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
     except Exception as e:
         log.warning(f"写 runtime 文件失败: {e}")
 
@@ -182,6 +187,24 @@ def load_lan_config() -> tuple[bool, str]:
     except Exception as e:
         log.warning(f"读取局域网配置失败（按仅本机处理）: {e}")
         return False, ""
+
+
+def load_https_enabled() -> bool:
+    """读 HTTPS 开关（v1.5.0，默认关）。
+
+    开启后除原有 HTTP 端口外，会**再起一个带自签证书的 HTTPS 监听**。
+    手机必须走 HTTPS 才能用「保存到相册 / 分享」按钮 —— Web Share API
+    带 [SecureContext]，非 localhost 的 http:// 源上不存在该 API。
+    """
+    try:
+        import watermark.core.config as cfgmod
+        on = bool(cfgmod.load().get("https_enabled", False))
+        if on:
+            log.info("HTTPS 已开启（自签证书，手机需安装并信任一次）")
+        return on
+    except Exception as e:
+        log.warning(f"读取 HTTPS 配置失败（按关闭处理）: {e}")
+        return False
 
 
 def lan_ip() -> str:
@@ -319,9 +342,36 @@ def main() -> int:
     # v4.0.1：已移除账号密码登录 —— 开启局域网即直接可访问（同一 WiFi 内）。
     lan_access, _ = load_lan_config()
     host = "0.0.0.0" if lan_access else "127.0.0.1"
-    write_runtime(port, host)
     log.info(f"服务端口: {port}，监听: {host}"
              + ("（局域网/手机可访问）" if lan_access else "（仅本机）"))
+
+    # --- v1.5.0：可选的 HTTPS 监听（原 HTTP 端口原样保留）---
+    # 桌面窗口走 127.0.0.1 = 安全上下文，不需要它；它只为手机端解锁
+    # 「保存到相册 / 分享」按钮。证书准备失败一律降级为「只有 HTTP」，
+    # 绝不能因此让程序起不来。
+    https_port = 0
+    https_ready = False
+    tls_info = {}
+    if load_https_enabled():
+        try:
+            from common import tls as tlsmod
+            https_port = pick_free_port(exclude=(port,))
+            tls_info = tlsmod.ensure_cert()
+            https_ready = bool(tls_info.get("exists"))
+            if not https_ready:
+                log.warning(f"HTTPS 证书不可用：{tls_info.get('reason')}")
+            elif not tls_info.get("ok"):
+                log.warning(f"HTTPS 证书可加载但提示：{tls_info.get('reason')}")
+        except Exception:
+            log.exception("准备 HTTPS 证书失败，本次仅提供 HTTP")
+            https_ready = False
+
+    write_runtime(port, host, {
+        "https_enabled": bool(https_ready),
+        "https_port": https_port if https_ready else 0,
+        "https_host": host,
+        "cert_fingerprint": tls_info.get("fingerprint_short", ""),
+    })
 
     # 预加载业务模块（会让界面更快出现）
     try:
@@ -351,15 +401,49 @@ def main() -> int:
 
     threading.Thread(target=_serve, daemon=True, name="uvicorn").start()
 
+    # 同一个 ASGI app 再挂一个 TLS 监听（两个 Server 各自一个线程）
+    https_running = False
+    if https_ready and https_port:
+        try:
+            from common import tls as tlsmod
+            tls_config = uvicorn.Config(
+                api.app, host=host, port=https_port,
+                log_level="warning", access_log=False, loop="asyncio",
+                **tlsmod.ssl_kwargs(),
+            )
+            tls_server = uvicorn.Server(tls_config)
+
+            def _serve_tls():
+                try:
+                    tls_server.run()
+                except Exception:
+                    log.exception("HTTPS 服务异常退出")
+
+            threading.Thread(target=_serve_tls, daemon=True, name="uvicorn-tls").start()
+            https_running = True
+        except Exception:
+            log.exception("启动 HTTPS 监听失败，本次仅提供 HTTP")
+
     if not wait_for_port(port):
         log.error("服务启动超时")
         _fatal("服务启动失败（端口未就绪），请查看 app.log")
         return 1
     log.info("HTTP 服务就绪")
-    if lan_access:
-        ip = lan_ip()
-        if ip:
-            log.info(f"手机访问地址: http://{ip}:{port}（同一 WiFi 下直接打开，无需登录）")
+    if https_running and not wait_for_port(https_port, timeout=15.0):
+        log.warning("HTTPS 端口未在 15 秒内就绪（HTTP 不受影响）")
+    elif https_running:
+        log.info(f"HTTPS 服务就绪（指纹 {tls_info.get('fingerprint_short', '?')}）")
+
+    ip = lan_ip()
+    if lan_access and ip:
+        log.info(f"手机访问地址: http://{ip}:{port}（同一 WiFi 下直接打开，无需登录）")
+    if https_running and ip:
+        if lan_access:
+            log.info(f"手机 HTTPS 地址: https://{ip}:{https_port}"
+                     "（需先在手机上安装并信任证书，装好后可长按保存/一键存相册）")
+        else:
+            log.info("已开启 HTTPS 但未开「局域网访问」，只有本机能连 —— "
+                     "手机要用请一并勾选「允许局域网访问」")
 
     # --- 主线程：原生窗口 ---
     import webview

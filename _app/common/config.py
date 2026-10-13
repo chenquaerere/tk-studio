@@ -91,6 +91,10 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "proxy_type": "http",
         "proxy_host": "",
         "proxy_port": "",
+        # 2026-10-13：付费代理/机场几乎都要求认证，旧版只有主机+端口必然连不上。
+        # 与 proxy_host/proxy_port 同分区、同白名单，由 common.proxy.build() 组装。
+        "proxy_username": "",
+        "proxy_password": "",
         "chat_last_count": 22,
     },
     # 原去水印 core/config.py DEFAULTS（保留全部键；HD 键在 hd 分区也有副本）
@@ -101,6 +105,10 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "keep_frames": False,
         "beep_on_done": True,
         "lan_access": False,
+        # 2026-10-13（v1.5.0）：内置 HTTPS。自签证书解锁手机的
+        # 「保存到相册 / 分享」按钮 —— Web Share API 带 [SecureContext]，
+        # 在非 localhost 的 http:// 源上根本不存在。默认关闭，行为零变化。
+        "https_enabled": False,
         # 2026-10-11 清理：lan_password 早已不再参与任何校验（api.py 的键表里
         # v4.0.1 就标注了「已移除」），tk_concurrent / tk_retries / tk_quality /
         # tk_proxy 四个键也没有读取点 —— 一并删除，避免「设了密码就安全」的错觉。

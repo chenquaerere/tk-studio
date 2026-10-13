@@ -97,6 +97,13 @@ def db_dump() -> dict:
         c.close()
 
 
+def _tls_files_ok() -> bool:
+    """证书三件套是否齐备（只读检查，不触发生成）。"""
+    from common import tls as tlsmod
+    return all(p.is_file() for p in (tlsmod.CERT_PATH, tlsmod.KEY_PATH,
+                                     tlsmod.META_PATH))
+
+
 def main() -> int:
     import uvicorn
     import server.api as api
@@ -1252,6 +1259,390 @@ def main() -> int:
         ]
         _bad = [n for n, ok in _cases if not ok]
         check(f"脏值/越界值被钳到安全范围（{len(_cases)} 项）", not _bad, str(_bad))
+
+        print("\n[3j] 代理设置（认证字段 + 真实转发测试 + 自动检测只读）")
+        # 2026-10-13：付费代理/机场几乎都要账号密码；旧版只有主机+端口必然连不上，
+        # 且「测试连通」只做 TCP 握手、读的还是**已保存**配置 —— 用户改完主机/端口
+        # 没点保存就点测试，测的是空配置，必然报「未启用代理或未填写地址」。
+        # 本节把这几条修复锁住，任何一条回退都会在这里变红。
+        _pkeys = ("proxy_enabled", "proxy_type", "proxy_host",
+                  "proxy_port", "proxy_username", "proxy_password")
+        check("设置键白名单含 6 个代理键",
+              all(k in _ca._COLLECTOR_SETTING_KEYS for k in _pkeys),
+              str([k for k in _ca._COLLECTOR_SETTING_KEYS if k.startswith("proxy")]))
+
+        _set0 = (_get_json("/api/collector/settings") or {}).get("values") or {}
+        _pback = {k: _set0.get(k) for k in _pkeys}
+        _psaved = _post_json("/api/collector/settings", _pback)
+        check("代理键能写进配置（写回原值，不改用户配置）",
+              _psaved.get("ok") is True
+              and all(k in (_psaved.get("saved") or []) for k in _pkeys),
+              str(_psaved.get("saved"))[:140])
+        _set1 = (_get_json("/api/collector/settings") or {}).get("values") or {}
+        check("回读值一致（用户名/密码字段也在）",
+              all(_set1.get(k) == _pback[k] for k in _pkeys),
+              str({k: _set1.get(k) for k in ("proxy_host", "proxy_username")}))
+
+        from common import proxy as _px
+        _pcfg = _px.build("http", "127.0.0.1", "7890", "u1", "p1")
+        check("代理配置能带认证（Playwright 的 username/password 键）",
+              _pcfg == {"server": "http://127.0.0.1:7890",
+                        "username": "u1", "password": "p1"}, str(_pcfg))
+        check("主机框里贴整串也能救回（旧实现会拼成 http://http://…）",
+              _px.build("http", "http://127.0.0.1:7890", "") ==
+              {"server": "http://127.0.0.1:7890"})
+        check("密码不进展示串（脱敏后才允许写日志/回前端）",
+              _px.display(_pcfg) == "http://u1:***@127.0.0.1:7890",
+              _px.display(_pcfg))
+        check("整段地址解析（含认证 / socks5 / 无端口兜底）",
+              _px.parse("socks5://joe:secret@1.2.3.4:1080")["proxy_password"] == "secret"
+              and _px.parse("127.0.0.1:7890")["proxy_type"] == "http"
+              and _px.parse("1.2.3.4")["proxy_port"] == "8080")
+
+        # 用一个必然连不上的端口验证「测的是请求体里的表单值」：
+        # 若它回「未启用代理或未填写地址」就说明又退回读已保存配置了。
+        _tp = _post_json("/api/collector/settings/test-proxy",
+                         {"proxy_type": "http", "proxy_host": "127.0.0.1",
+                          "proxy_port": "59987", "proxy_username": "",
+                          "proxy_password": ""})
+        check("test-proxy 用的是请求体里的表单值（不是已保存配置）",
+              _tp.get("ok") is False and "连接被拒绝" in str(_tp.get("message", "")),
+              str(_tp.get("message"))[:110])
+        _tp2 = _post_json("/api/collector/settings/test-proxy",
+                          {"proxy_type": "http", "proxy_host": "", "proxy_port": ""})
+        check("表单为空时给可读提示（不崩、不误导）",
+              _tp2.get("ok") is False and _tp2.get("stage") == "config",
+              str(_tp2.get("message"))[:110])
+
+        _pcfg_before = (_get_json("/api/collector/settings") or {}).get("values")
+        _det = _post_json("/api/collector/settings/detect-proxy", {"timeout": 4})
+        _pcfg_after = (_get_json("/api/collector/settings") or {}).get("values")
+        check("detect-proxy 返回候选结构（按可用/延迟排序）",
+              _det.get("ok") is True and isinstance(_det.get("all"), list)
+              and isinstance(_det.get("available"), list),
+              f"候选 {_det.get('scanned')} 个 / 可用 {len(_det.get('available') or [])} 个")
+        check("自动检测是只读的：一行配置都不改", _pcfg_before == _pcfg_after)
+
+        goto("settings")
+        page.wait_for_timeout(900)
+        _pc = page.evaluate("""() => ({
+          missing: ['cset-proxy-on','cset-proxy-type','cset-proxy-host','cset-proxy-port',
+                    'cset-proxy-user','cset-proxy-pass','cset-proxy-detect',
+                    'cset-proxy-paste','cset-proxy-test','cset-proxy-msg',
+                    'cset-proxy-result','cset-proxy-list']
+                   .filter(i => !document.getElementById(i)),
+          passType: document.getElementById('cset-proxy-pass')?.type,
+          opts: [...document.querySelectorAll('#cset-proxy-type option')].map(o => o.value),
+          icos: ['cset-proxy-detect','cset-proxy-paste','cset-proxy-test']
+                .map(i => document.getElementById(i)?.dataset.ico || ''),
+          hint: !!document.querySelector('#page-settings .row.proxy-row'),
+        })""")
+        check("代理区控件齐备（密码框 + 自动检测/粘贴两个新按钮）",
+              not _pc["missing"], str(_pc["missing"]))
+        check("密码框是 password 类型（肩窥防护）", _pc["passType"] == "password")
+        check("代理类型含 http/https/socks5/socks4",
+              _pc["opts"] == ["http", "https", "socks5", "socks4"], str(_pc["opts"]))
+        check("新增按钮带矢量图标（铁律 24：禁彩色 emoji）",
+              all(_pc["icos"]), str(_pc["icos"]))
+        check("代理行有专属列宽类（6 个控件排一行，密码不落单）", _pc["hint"])
+
+        print("\n[3k] 手机端素材库（长按存相册的可用性）")
+        # 2026-10-13：手机取素材最短的路径是「长按图片 → 存储到照片」。
+        # 这条链路上有三个极易回退的点，逐条锁住：
+        #   ① 图片必须是原图 —— 后端 /api/file 直出原文件，没有缩略图服务
+        #   ② 「打开」必须用 preview_url（Content-Disposition: inline）；
+        #      若用 url（attachment），iOS 只会把它下载进「文件」App，
+        #      而相册不在那条路径上，用户根本没有「存储到照片」的机会
+        #   ③ 卡片不能被图片固有宽度撑爆（min-width: 0）—— 用户素材动辄
+        #      1080px，缺这一条手机上列宽会到 500px+，卡片右半被容器裁掉，
+        #      而文档宽度看着仍等于视口，肉眼极难察觉（既有缺陷，已修）
+        _mctx = browser.new_context(viewport={"width": 390, "height": 844},
+                                    device_scale_factor=2, is_mobile=True,
+                                    has_touch=True, locale="zh-CN")
+        _mp = _mctx.new_page()
+        _mp.on("console", lambda m: errors.append(f"mobile console.{m.type}: {m.text}")
+               if m.type == "error" else None)
+        _mp.on("pageerror", lambda e: errors.append(f"mobile pageerror: {e}"))
+        _mp.goto(base, wait_until="domcontentloaded")
+        _mp.wait_for_timeout(1300)
+        # 点侧栏激活（hash 直达不会执行该页的 loader）
+        _mp.click('.nav-item[data-page="library"]')
+        try:
+            _mp.wait_for_selector("#lib-gallery figure", timeout=45000)
+        except Exception:  # noqa: BLE001
+            pass
+        _mp.wait_for_timeout(1200)
+
+        _mg = _mp.evaluate("""() => {
+          const g = document.getElementById('lib-gallery');
+          if (!g) return null;
+          const figs = [...g.querySelectorAll('figure')];
+          const bars = [...g.querySelectorAll('.gallery-actions')];
+          const cards = figs.slice(0, 3).map(f => Math.round(f.getBoundingClientRect().width));
+          const barsOk = bars.every(b => {
+            const r = [...b.querySelectorAll('.btn')].map(x => x.getBoundingClientRect().top);
+            return r.length < 2 || Math.abs(r[0] - r[1]) < 2;
+          });
+          const tip = document.getElementById('lib-tip');
+          return {
+            figs: figs.length, bars: bars.length,
+            btns: g.querySelectorAll('.gallery-actions .btn').length,
+            icos: [...new Set([...g.querySelectorAll('.gallery-actions .btn')]
+                    .map(b => b.dataset.ico))].sort(),
+            cards: cards, barsOk: barsOk,
+            tipShown: tip ? getComputedStyle(tip).display !== 'none' : false,
+            docW: document.documentElement.scrollWidth, winW: window.innerWidth,
+          };
+        }""")
+        check("素材库在手机视口渲染出卡片", bool(_mg) and _mg["figs"] > 0,
+              f"{( _mg or {}).get('figs')} 张")
+        check("每张卡片都有操作行且每行 2 个按钮",
+              bool(_mg) and _mg["bars"] == _mg["figs"] and _mg["btns"] == _mg["figs"] * 2,
+              f"{(_mg or {}).get('bars')}/{(_mg or {}).get('figs')} 行 · "
+              f"{(_mg or {}).get('btns')} 按钮")
+        check("操作按钮用矢量图标（铁律 24：禁彩色 emoji）",
+              bool(_mg) and _mg["icos"] == ["download", "window"], str((_mg or {}).get("icos")))
+        check("卡片宽度跟随视口（min-width: 0 生效，未被图片固有宽度撑爆）",
+              bool(_mg) and _mg["cards"] and max(_mg["cards"]) < 220,
+              f"卡片宽 {(_mg or {}).get('cards')} · 视口 {(_mg or {}).get('winW')}")
+        check("操作行两个按钮不折行", bool(_mg) and _mg["barsOk"])
+        check("手机端显示取素材提示条", bool(_mg) and _mg["tipShown"])
+        check("手机视口无横向溢出",
+              bool(_mg) and _mg["docW"] <= _mg["winW"],
+              f"文档 {(_mg or {}).get('docW')} / 视口 {(_mg or {}).get('winW')}")
+
+        _open_href = _mp.evaluate(
+            "() => (document.querySelector('#lib-gallery .gallery-actions a') || {}).href || ''")
+        check("「打开」用 inline 预览 URL（否则 iOS 只会下载到「文件」App）",
+              "inline=1" in _open_href, _open_href[:72])
+
+        _mp.locator("#lib-gallery img").first.click()
+        _mp.wait_for_timeout(700)
+        check("点图片打开灯箱并带长按提示",
+              _mp.locator(".lightbox").count() == 1
+              and _mp.locator(".lightbox-tip").count() == 1)
+        if _mp.locator(".lightbox img").count():
+            _mp.locator(".lightbox img").click(position={"x": 10, "y": 10})
+            _mp.wait_for_timeout(400)
+        check("点图片不关闭灯箱（否则长按松手就没了）",
+              _mp.locator(".lightbox").count() == 1)
+        _mp.mouse.click(6, 6)
+        _mp.wait_for_timeout(500)
+        check("点背景关闭灯箱", _mp.locator(".lightbox").count() == 0)
+        _mctx.close()
+
+        print("\n[3l] HTTPS：手机「一键保存到相册」的完整契约（v1.5.0）")
+        # 背景：手机端能一键存相册的 navigator.share 带 [SecureContext]，
+        # 在非 localhost 的 http:// 源上**直接是 undefined**。所以要么开 HTTPS，
+        # 要么只能长按逐张存。这一节锁住四件事：
+        #   ① 自签证书本身合法（SAN 含 IP / ≤825 天 / ≥2048 位）
+        #   ② 端点：只读性、参数校验（铁律 6）、证书可下载
+        #   ③ 桌面端**绝不**多出这个按钮（界面必须保持原样）
+        #   ④ 触屏 + 支持分享时才出现，且真的把**原文件**交给了系统面板
+        from common import paths as _vp
+        from common import tls as _vtls
+
+        # 第一次点「重新生成」= 首次开启的路径（此时还没有任何证书文件）
+        _vtls.remove_cert()
+        _first = page.request.post(base + "/api/https/regenerate")
+        _first_ok = _first.status == 200
+        check("还没有证书时也能生成（首次开启 HTTPS 的路径）",
+              _first_ok and bool((_first.json().get("cert") or {}).get("fingerprint_short")),
+              f"HTTP {_first.status}")
+
+        _ci = api.https_info()
+        _cert = _ci.get("cert") or {}
+        check("证书已生成且自检通过", bool(_cert.get("exists")) and bool(_cert.get("ok")),
+              str(_cert.get("reason")))
+        check("有效期 ≤ 825 天（Apple 对 TLS 服务器证书的硬要求）",
+              0 < int(_cert.get("days_left") or 0) <= 825,
+              f"{_cert.get('days_left')} 天")
+        check("RSA ≥ 2048 位且签名 SHA-256", int(_cert.get("key_bits") or 0) >= 2048,
+              str(_cert.get("key_bits")))
+        _san_ips = {str(v) for k, v in (_cert.get("hosts") or []) if k == "ip"}
+        _local_ips = set(_ci.get("local_ips") or [])
+        check("SAN 覆盖本机全部内网 IP（iOS 只看 SAN，不看 CN）",
+              "127.0.0.1" in _san_ips and _local_ips <= _san_ips,
+              f"SAN={sorted(_san_ips)} 本机={sorted(_local_ips)}")
+        check("证书 + 私钥 + 元数据三件套齐备",
+              _tls_files_ok(), "runtime/tls/")
+
+        # ---- 接线端到端：真的起一个带 TLS 的 uvicorn（复刻 desktop.py 那段）----
+        # 上面的 http 服务是脚本自己起的；desktop.py 里「拿 ssl_kwargs() 再起
+        # 一个 TLS 监听」那段如果不测，证书再对也可能根本没接上。
+        import http.client as _hc
+        import ssl as _ssl
+
+        _tport = free_port()
+        _tserver = uvicorn.Server(uvicorn.Config(
+            api.app, host="127.0.0.1", port=_tport, log_level="warning",
+            access_log=False, loop="asyncio", **_vtls.ssl_kwargs()))
+        threading.Thread(target=_tserver.run, daemon=True,
+                         name="uvicorn-w7-tls").start()
+        _tdeadline = time.time() + 30
+        _tready = False
+        while time.time() < _tdeadline:
+            with socket.socket() as s:
+                s.settimeout(0.3)
+                if s.connect_ex(("127.0.0.1", _tport)) == 0:
+                    _tready = True
+                    break
+            time.sleep(0.2)
+        check("带证书的 HTTPS 监听能起来（desktop.py 的接线）", _tready,
+              f"127.0.0.1:{_tport}")
+        _tls_ver = "?"
+        if _tready:
+            try:
+                _c = _hc.HTTPSConnection("127.0.0.1", _tport,
+                                         context=_ssl.create_default_context(
+                                             cafile=str(_vtls.CERT_PATH)), timeout=15)
+                _c.request("GET", "/")
+                _r = _c.getresponse()
+                _body = _r.read()
+                _tls_ver = _c.sock.version() if _c.sock else "?"
+                check("信任证书的客户端能通过 https 拿到前端页面",
+                      _r.status == 200 and b"<html" in _body.lower(),
+                      f"HTTP {_r.status} · {len(_body)} B")
+                check("协商到 TLS1.2+ 而不是明文",
+                      _tls_ver in ("TLSv1.2", "TLSv1.3"), str(_tls_ver))
+                _c.close()
+            except Exception as exc:  # noqa: BLE001
+                check("https 请求失败", False, repr(exc)[:130])
+            try:
+                _b = _hc.HTTPSConnection(
+                    "127.0.0.1", _tport,
+                    context=_ssl.create_default_context(), timeout=10)
+                _b.request("GET", "/")
+                _b.getresponse()
+                check("未信任证书时不该成功", False, "竟然成功了")
+            except Exception as exc:  # noqa: BLE001
+                check("未信任证书的客户端照旧被拒（所以手机必须先装证书）",
+                      isinstance(exc, _ssl.SSLError), type(exc).__name__)
+        _tserver.should_exit = True
+
+        _bad = page.request.post(base + "/api/https-settings", data={"x": 1})
+        check("缺 enabled 参数被拒（铁律 6：写操作不允许隐式默认）",
+              _bad.status == 400, f"HTTP {_bad.status}")
+
+        _info = page.request.get(base + "/api/https-info").json()
+        check("/api/https-info 结构完整",
+              {"desired", "running", "need_restart", "cert", "download_url"}
+              <= set(_info), str(sorted(_info))[:110])
+        check("默认不启用（行为零变化）", _info["desired"] is False,
+              f"desired={_info['desired']}")
+
+        _dl = page.request.get(base + "/api/https/cert")
+        _cd = (_dl.headers.get("content-disposition") or "").lower()
+        _ct = (_dl.headers.get("content-type") or "").lower()
+        check("证书下载端点是 attachment（手机才会弹「安装描述文件」）",
+              "attachment" in _cd and "x509" in _ct, f"{_cd} · {_ct}")
+        check("下载到的确是 PEM 证书",
+              _dl.body().decode("utf-8", "replace").startswith("-----BEGIN CERTIFICATE-----"))
+
+        _regen = page.request.post(base + "/api/https/regenerate").json()
+        check("重新生成证书后仍可用",
+              bool((_regen.get("cert") or {}).get("fingerprint_short")),
+              str((_regen.get("cert") or {}).get("fingerprint_short")))
+
+        # ---- 开关端点：写 → 读回 → **逐字节还原用户配置** ----
+        _cfg = _vp.CONFIG_PATH
+        _raw = _cfg.read_bytes() if _cfg.is_file() else None
+        try:
+            _r = page.request.post(base + "/api/https-settings", data={"enabled": True})
+            check("开关端点写入成功", _r.status == 200, f"HTTP {_r.status}")
+            _after = page.request.get(base + "/api/https-info").json()
+            check("开启后 desired=True 且提示「需重启才生效」",
+                  _after["desired"] is True and _after["need_restart"] is True,
+                  f"desired={_after['desired']} need_restart={_after['need_restart']}")
+        finally:
+            if _raw is not None:
+                _cfg.write_bytes(_raw)
+            else:
+                _cfg.unlink(missing_ok=True)
+        check("用户 config.json 已逐字节还原（验收不污染配置）",
+              (_cfg.read_bytes() if _cfg.is_file() else None) == _raw)
+        check("还原后 /api/https-info 回到未启用",
+              page.request.get(base + "/api/https-info").json()["desired"] is False)
+
+        # ---- 界面：媒体大图上的「保存到相册」按钮（条件渲染）----
+        _m2 = browser.new_context(viewport={"width": 390, "height": 844},
+                                  device_scale_factor=2, is_mobile=True,
+                                  has_touch=True, locale="zh-CN")
+        _p2 = _m2.new_page()
+        _p2.on("console", lambda m: errors.append(f"https console.{m.type}: {m.text}")
+               if m.type == "error" else None)
+        _p2.on("pageerror", lambda e: errors.append(f"https pageerror: {e}"))
+        _p2.goto(base, wait_until="domcontentloaded")
+        _p2.wait_for_timeout(1200)
+        _p2.click('.nav-item[data-page="library"]')
+        try:
+            _p2.wait_for_selector("#lib-gallery img", timeout=45000)
+        except Exception:  # noqa: BLE001
+            pass
+        _p2.wait_for_timeout(1000)
+
+        _stub = """() => {
+          Object.defineProperty(navigator, 'maxTouchPoints',
+                                {get: () => 5, configurable: true});
+          window.__shared = null;
+          navigator.share = async (d) => {
+            window.__shared = {files: [...(d.files || [])].map(
+              f => ({name: f.name, size: f.size, type: f.type}))};
+          };
+          navigator.canShare = (d) => !!(d && d.files && d.files.length);
+        }"""
+        _p2.evaluate(_stub)
+        _p2.locator("#lib-gallery img").first.click()
+        _p2.wait_for_timeout(700)
+        _share_btn = _p2.locator(".lightbox-actions .btn")
+        check("安全上下文 + 触屏 + 支持分享时出现「保存到相册」",
+              _share_btn.count() == 1, f"{_share_btn.count()} 个")
+        if _share_btn.count() == 1:
+            check("按钮用矢量图标且写的是「保存到相册」",
+                  _p2.eval_on_selector(".lightbox-actions .btn",
+                                       "el => [el.dataset.ico, el.textContent]")
+                  == ["save", "保存到相册"],
+                  str(_p2.eval_on_selector(".lightbox-actions .btn",
+                                           "el => [el.dataset.ico, el.textContent]")))
+            _share_btn.click()
+            _p2.wait_for_timeout(1500)
+            _shared = _p2.evaluate("() => window.__shared")
+            check("点一下真的把**原文件**交给了系统面板（不是缩略图、不是空壳）",
+                  bool(_shared) and bool(_shared.get("files"))
+                  and (_shared["files"][0]["size"] or 0) > 0,
+                  str(_shared)[:120])
+            check("按钮点击不关闭灯箱（分享/保存过程中图还在）",
+                  _p2.locator(".lightbox").count() == 1)
+        _p2.mouse.click(6, 6)
+        _p2.wait_for_timeout(400)
+
+        # 反向 1：桌面（无触屏）—— 界面必须保持原样，不许多出按钮
+        _p2.evaluate("() => Object.defineProperty(navigator, 'maxTouchPoints',"
+                     "{get: () => 0, configurable: true})")
+        _p2.locator("#lib-gallery img").first.click()
+        _p2.wait_for_timeout(600)
+        check("桌面（无触屏）不出现该按钮 —— 桌面界面零变化",
+              _p2.locator(".lightbox-actions").count() == 0)
+        _p2.mouse.click(6, 6)
+        _p2.wait_for_timeout(300)
+
+        # 反向 2：普通 http 手机浏览器（canShare 不存在）—— 同样不该出现
+        _p2.evaluate("""() => {
+          Object.defineProperty(navigator, 'maxTouchPoints',
+                                {get: () => 5, configurable: true});
+          Object.defineProperty(navigator, 'canShare',
+                                {value: undefined, configurable: true});
+        }""")
+        _p2.locator("#lib-gallery img").first.click()
+        _p2.wait_for_timeout(600)
+        check("http 手机浏览器（无 Web Share）不出现该按钮 —— 降级为长按保存",
+              _p2.locator(".lightbox-actions").count() == 0)
+        check("降级后长按提示仍指向「存储到照片」",
+              "存储到照片" in (_p2.locator(".lightbox-tip").inner_text()
+                               if _p2.locator(".lightbox-tip").count() else ""))
+        _p2.mouse.click(6, 6)
+        _p2.wait_for_timeout(300)
+        _m2.close()
 
         print("\n[4] 仪表盘自动刷新（原桌面版每 3 秒重算）")
         goto("dashboard")

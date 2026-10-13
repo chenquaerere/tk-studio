@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse
 
 from common import config as ucfg
 from common import paths as _paths
+from common import proxy as proxy_util
 from common.version import APP_VERSION
 
 from collector.bootstrap import CollectorServices
@@ -861,13 +862,19 @@ def _summary_text(s: dict) -> str:
         parts.append(f"无作品 {s['empty']}")
     if s.get("failed"):
         parts.append(f"失败 {s['failed']}")
+    if s.get("skipped"):
+        parts.append(f"中止 {s['skipped']}")
     extra = []
     if s.get("pinned_collected"):
         extra.append(f"额外采集 {s['pinned_collected']} 条置顶（今天/昨天发布，不占数量）")
     if s.get("pinned_skipped"):
         extra.append(f"跳过 {s['pinned_skipped']} 条旧置顶作品（不计入数量）")
+    if s.get("blocked"):
+        extra.append(
+            f"{s['blocked']} 个账号被 TikTok 拒绝返回作品列表（空响应/页面报错），"
+            "已自动重试仍失败；这些账号的旧记录已回滚保留，建议登录后再采或稍后重试")
     if s.get("restored"):
-        extra.append(f"已回滚保留 {s['restored']} 条旧记录（采集失败且无新记录，未丢失）")
+        extra.append(f"已回滚保留 {s['restored']} 条旧记录（本次未采到新作品，未丢失）")
     if s.get("login_aborted"):
         extra.append("登录态失效已提前停止，后面账号的旧记录未清除")
     if s.get("links_kept"):
@@ -1338,6 +1345,9 @@ _COLLECTOR_SETTING_KEYS = [
     "history_keep_days", "notify_sound", "log_level", "log_keep_days",
     "update_repo", "update_url",
     "auto_check_update", "proxy_enabled", "proxy_type", "proxy_host", "proxy_port",
+    # 代理认证（2026-10-13）：付费代理/机场几乎都要求账号密码，
+    # 缺这两个字段时填了地址也连不上。
+    "proxy_username", "proxy_password",
     "chat_last_count",
     # 原桌面版「数据 / 日志」分组里可编辑的两个路径（此前只在「关于」页只读展示）
     "export_dir", "log_dir",
@@ -1410,23 +1420,93 @@ def reset_settings(payload: dict = None):
 
 
 @router.post("/settings/test-proxy")
-def test_proxy():
-    """测试当前代理配置是否可用（不启动浏览器，只做 TCP 连通）。"""
-    import socket
+def test_proxy(payload: dict = None):
+    """测试代理是否**真的能转发流量**（不只是端口有服务在听）。
 
-    pc = ctx().config.proxy_config()
-    if not pc:
-        return {"ok": False, "message": "未启用代理或未填写地址"}
-    server = str(pc.get("server") or "")
-    hostport = server.split("://")[-1]
-    host, _, port = hostport.rpartition(":")
-    if not host or not port.isdigit():
-        return {"ok": False, "message": f"代理地址格式不正确: {server}"}
+    旧实现有两个坑（2026-10-13 修复）：
+      ① 只做 TCP `create_connection` —— 端口通不代表能出网，代理认证失败、
+         出口 IP 未加白名单、线路故障都测不出来；
+      ② 不接收参数，永远读**已保存的配置** —— 用户在界面上改完主机/端口后
+         没点保存直接点「测试连通」，测的仍是旧值（通常是空），必然报
+         「未启用代理或未填写地址」。
+
+    现在：优先用请求体里的**当前表单值**（无 body 时回退到已保存配置），
+    并真实发一次请求拿出口 IP；失败时按错误类型给出可读原因。
+    """
+    body = payload or {}
+    base = {}
+    for key in ("proxy_type", "proxy_host", "proxy_port",
+                "proxy_username", "proxy_password"):
+        value = body.get(key)
+        base[key] = "" if value is None else value
+
+    has_form = bool(str(base["proxy_host"]).strip() or str(base["proxy_port"]).strip())
+    if not has_form:                       # 兼容旧调用：不带 body 时用已保存配置
+        saved = ctx().config
+        for key in base:
+            base[key] = saved.get(key)
+        base["proxy_type"] = base["proxy_type"] or "http"
+
+    cfg = proxy_util.build(base["proxy_type"], base["proxy_host"],
+                           base["proxy_port"], base["proxy_username"],
+                           base["proxy_password"])
+    if cfg is None:
+        return {"ok": False, "stage": "config",
+                "message": "代理地址或端口没填全：主机一般填 127.0.0.1，"
+                           "端口填代理软件里的本地监听端口（如 Clash 默认 7890）"}
+
+    result = proxy_util.probe_config(cfg, timeout=6.0, fallback=base)
+    if result.get("ok"):
+        ip = str(result.get("exit_ip") or "")
+        note = str(result.get("note") or "")
+        latency = result.get("latency_ms")
+        msg = f"代理可用（{latency} ms）"
+        if ip:
+            msg += f"，出口 IP {ip}"
+        if note:
+            msg += f"；{note}"
+        return {"ok": True, "message": msg, "exit_ip": ip, "latency_ms": latency}
+    return {"ok": False, "message": result.get("error") or "代理不可用",
+            "latency_ms": result.get("latency_ms")}
+
+
+@router.post("/settings/detect-proxy")
+def detect_proxy(payload: dict = None):
+    """自动检测本机可用代理（**只读**，不改任何配置）。
+
+    三个来源：① 环境变量 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    ② Windows 系统代理与 PAC ③ 常见本地代理端口（Clash / v2rayN / SOCKS…）。
+
+    每个候选都会做一次**真实转发验证**，只有真能出网的才标 `ok`；
+    结果按「可用优先、延迟升序」排序返回，由用户自己决定用哪个。
+    """
+    body = payload or {}
     try:
-        with socket.create_connection((host, int(port)), timeout=3):
-            return {"ok": True, "message": f"代理可达：{server}"}
-    except OSError as exc:
-        return {"ok": False, "message": f"代理不可达：{exc}"}
+        timeout = float(body.get("timeout") or 6.0)
+    except (TypeError, ValueError):
+        timeout = 6.0
+    timeout = max(2.0, min(timeout, 15.0))
+
+    info = proxy_util.discover()
+    results = proxy_util.probe_many(info["candidates"], timeout=timeout)
+    results.sort(key=lambda r: (not r.get("ok"), r.get("latency_ms") or 10 ** 9))
+    return {"ok": True, "pac_url": info.get("pac_url") or "",
+            "available": [r for r in results if r.get("ok")],
+            "all": results, "scanned": len(results)}
+
+
+@router.post("/settings/parse-proxy")
+def parse_proxy(payload: dict):
+    """解析整段代理地址（`type://user:pass@host:port`）。
+
+    解析规则只有一份 —— 在 `common.proxy.parse()`，界面上的「粘贴完整地址」
+    与自动检测回填都走它，不重复实现。
+    """
+    raw = str((payload or {}).get("url") or "").strip()
+    try:
+        return {"ok": True, "parsed": proxy_util.parse(raw)}
+    except proxy_util.ProxyError as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 # ------------------------------------------------------------------ 维护

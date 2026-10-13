@@ -14,7 +14,7 @@
 - 发布时间尽力解析并记录（createTime），无法确认的照常采集，publish_date 记空。
 - **替换式记录**：新任务开始时删除本次所有账号的历史作品记录，
   多次采集（含同日多次测试）一律按最后一次的结果替换。
-- **失败回滚（v1.4.3）**：删除前留快照，某账号整体失败且一条未采到时原样写回；
+- **失败回滚（v1.4.3 / v1.4.7）**：删除前留快照，某账号失败**或被中止**且一条未采到时原样写回；
   首个账号确认登录态失效则提前结束，后面的账号不清旧记录。
 - 每日链接日志同日文件同样按最后一次运行整体替换。
 """
@@ -34,7 +34,7 @@ from collector.core.models import (
     Video,
 )
 from collector.core.url_normalizer import normalize_url
-from collector.collect.exceptions import LoginRequired, RateLimited
+from collector.collect.exceptions import LoginRequired, RateLimited, SiteBlocked
 from collector.log.logger import get_logger
 
 # on_progress(current_index, total, account_username, status, detail)
@@ -64,8 +64,9 @@ class CollectEngine:
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._pause.set()               # set = 运行；clear = 暂停（与 Job.pause 同语义）
-        self._run_urls: List[str] = []  # 本次运行采集的链接（链接日志替换用）
+        self._run_urls: List[str] = []  # 本次运行采集的链接（链接日志累计写入用）
         self._rate_backoff = 0          # 限流退避等级（0 无退避，随 429 递增）
+        self._blocked_backoff_level = 0  # 站点空响应退避等级（v1.4.7）
         self._abort_reason = ""         # 非空则提前结束（登录态失效熔断，v1.4.3）
 
     # ---- 停止 / 暂停控制 ----
@@ -153,9 +154,10 @@ class CollectEngine:
             "new_videos": 0, "duplicates": 0, "unconfirmed": 0,
             "pinned_skipped": 0,     # 本次跳过的置顶作品总数（非近期，不占名额）
             "pinned_collected": 0,   # 本次额外采集的近期置顶总数（今天/昨天发布）
-            "restored": 0,           # 失败账号回滚写回的旧记录条数（v1.4.3）
+            "restored": 0,           # 未采到作品的账号回滚写回的旧记录条数（v1.4.3/1.4.7）
+            "blocked": 0,            # 被 TikTok 拒绝返回作品列表的账号数（v1.4.7）
             "login_aborted": False,  # 是否因登录态失效提前结束（后面的账号不清旧记录）
-            "links_written": 0,      # 本次链接日志写入条数
+            "links_written": 0,      # 本次链接日志**新增**条数（全天累计，去重后）
             "links_kept": 0,         # 本次没采到链接、保留下来的当日链接条数
             "accounts": [],
         }
@@ -163,7 +165,7 @@ class CollectEngine:
         total = len(accounts)
         self.logger.info("任务 %s 开始：%d 个账号，最新N条模式（记录日期 %s）",
                          task_id, total, target_date)
-        self._run_urls = []  # 本次运行采到的全部链接（供链接日志整体替换）
+        self._run_urls = []  # 本次运行采到的全部链接（供链接日志累计写入）
         try:
             for idx, acc in enumerate(accounts):
                 # 登录态失效熔断（v1.4.3）：第一个账号确认登录失效后，后面的
@@ -207,13 +209,27 @@ class CollectEngine:
                     removed_accounts += 1
 
                 result = self._collect_account(acc, task_id, target_date, on_progress, idx, total)
-                if snapshot and result.status == "failed" and result.actual_count == 0:
+                # 回滚条件（v1.4.3 起）：失败且一条都没采到 → 原样写回。
+                # 2026-10-12 用户报「采 15 个账号、每个 3 条，最终只有 12 条」：
+                # 11 个账号被 TikTok 空响应拒绝却被判成 empty（今日没有作品），
+                # 而 empty 不回滚 —— 于是一次「先清后采」就把旧记录清成了空白。
+                # v1.4.7 让这种拒绝在采集器里抛 SiteBlocked（见 profile_collector），
+                # 它统一走这条 failed 分支：重试用尽后回滚保留旧记录。
+                #
+                # 2026-10-12 22:01 又踩到同一条缝的另一半：用户采到一半**手动停止**，
+                # 该账号旧记录已被「先清后采」删除，而停止路径给的状态是 skipped ——
+                # 不在回滚条件里，于是 @user1986540439405 的 3 条记录被清空且没写回
+                # （事后从自动备份恢复）。中止同样属于异常中断，必须一起回滚；
+                # 只有 empty（真的一次作品都没有）保持「替换式清空」语义。
+                if (snapshot and result.status in ("failed", "skipped")
+                        and result.actual_count == 0):
                     back = self.db.restore_videos(snapshot)
                     summary["restored"] += back
                     note = "（本次未采到任何作品，已回滚保留原记录）"
                     result.error_reason = (result.error_reason or "") + note
-                    self.logger.warning("账号 @%s 采集失败且无新记录，已回滚 %d 条旧记录",
-                                        acc.username, back)
+                    self.logger.warning(
+                        "账号 @%s 本次一条都没采到（status=%s），已回滚保留 %d 条旧记录",
+                        acc.username, result.status, back)
                 self.logger.info("账号 @%s 完成：status=%s target=%d actual=%d err=%r",
                                  acc.username, result.status, result.target_count,
                                  result.actual_count, result.error_reason)
@@ -232,8 +248,15 @@ class CollectEngine:
                     summary["partial"] += 1
                 elif result.status == "empty":
                     summary["empty"] += 1
+                elif result.status == "skipped":
+                    # v1.4.7 给「被中止的账号」定了 skipped 语义（旧记录已回滚保留），
+                    # 但这里的汇总分支当时写成了 pass —— 于是摘要里永远看不到
+                    # 有多少账号是被中止的，287 行那段 login_aborted 提示也跟着失效。
+                    summary["skipped"] += 1
                 elif result.status == "failed":
                     summary["failed"] += 1
+                    if result.diagnostics.get("site_blocked"):
+                        summary["blocked"] += 1
                     if result.diagnostics.get("login_required"):
                         summary["login_required"] += 1
                         if not self._abort_reason:
@@ -256,22 +279,29 @@ class CollectEngine:
                 self.logger.warning(
                     "⚠️ 替换式记录清除了 %d 条既有作品，量级偏大 —— "
                     "请核对本次采集的账号范围是否正确", removed_total)
+            if summary.get("blocked"):
+                self.logger.warning(
+                    "%d 个账号被 TikTok 拒绝返回作品列表（空响应/页面报错），已自动重试仍失败；"
+                    "这些账号的旧记录已回滚保留，建议登录后再采或稍后重试",
+                    summary["blocked"])
             if summary.get("restored"):
-                self.logger.info("已回滚保留 %d 条旧记录（采集失败且无新记录的账号）",
+                self.logger.info("已回滚保留 %d 条旧记录（本次未采到作品的账号）",
                                  summary["restored"])
             if summary.get("login_aborted") and summary.get("skipped"):
                 self.logger.warning("登录态失效导致任务提前结束：%d 个账号未采集（旧记录未清除）",
                                     summary["skipped"])
-            # 链接日志：按「最后一次运行」整体替换当日文件（含停止/异常场景）
+            # 链接日志：全天累计（去重追加），不再「按最后一次运行整体替换」
             #
-            # ⚠️ 只有**本次真的采到链接**才替换（v1.4.3）：`replace()` 用 "w" 打开，
-            #    传空列表会把当日文件清成 0 字节。登录态失效、全部账号失败、
-            #    刚开跑就被停止 —— 这些情况一条链接都没有，清空等于把上一次
-            #    成功采集的成果删掉，且没有任何提示。
+            # 2026-10-12 用户反馈「链接日志里账号不全」：替换式写法下，一次只勾了
+            # 部分账号的采集会把之前跑过的账号从当日日志里整个抹掉（实测：15 个
+            # 越南账号跑完，当日文件里早先跑过的美区/缅甸账号全没了）。v1.4.7 改为
+            # 累计写入：当天跑过的每个账号都留在日志里，只增不减。
+            # 同时保留 v1.4.3 的保护：本次没采到链接时一个字都不写 —— 旧实现是
+            # `replace([])`，用 "w" 打开会把当日文件清成 0 字节。
             if self.daily_links is not None:
                 try:
                     if self._run_urls:
-                        summary["links_written"] = self.daily_links.replace(
+                        summary["links_written"] = self.daily_links.append_many(
                             self._run_urls, day=target_date)
                     else:
                         kept = self.daily_links.load(day=target_date)
@@ -330,6 +360,7 @@ class CollectEngine:
         """
         last_error = ""
         login_required = False
+        site_blocked = False
         attempts = 0
         for attempt in range(1, self.max_retry + 1):
             if self._stopped():
@@ -351,6 +382,17 @@ class CollectEngine:
                                     acc.username, attempt, self.max_retry, last_error)
                 if attempt < self.max_retry:
                     self._backoff_sleep()
+            except SiteBlocked as exc:
+                # TikTok 空响应/页面报错（v1.4.7）：换一次新导航往往就过了，
+                # 因此按退避重试；重试用尽才判失败（旧记录会回滚，不会丢）。
+                site_blocked = True
+                last_error = str(exc) or "TikTok 未返回作品列表"
+                attempts = attempt
+                self.logger.warning(
+                    "账号 @%s 第 %d/%d 次未拿到作品列表（TikTok 空响应/页面报错）: %s",
+                    acc.username, attempt, self.max_retry, last_error)
+                if attempt < self.max_retry:
+                    self._blocked_backoff()
             except Exception as exc:  # noqa: BLE001 —— 单账号失败不得阻断整体
                 last_error = str(exc) or type(exc).__name__
                 attempts = attempt
@@ -358,7 +400,8 @@ class CollectEngine:
                                     acc.username, attempt, self.max_retry, last_error)
                 if attempt < self.max_retry:
                     time.sleep(1.0)
-        diag = {"login_required": login_required, "attempts": attempts or self.max_retry}
+        diag = {"login_required": login_required, "site_blocked": site_blocked,
+                "attempts": attempts or self.max_retry}
         return self._result(acc, target_date, 0, "failed", last_error, diag, [])
 
     def _collect_once(self, acc, task_id, target_date, on_progress, idx, total, attempt):
@@ -557,6 +600,16 @@ class CollectEngine:
         delay = min(60.0, 10.0 * (2 ** self._rate_backoff))
         self._rate_backoff += 1
         self.logger.info("限流退避等待 %.0f 秒后重试", delay)
+        self._interruptible_sleep(delay)
+
+    def _blocked_backoff(self) -> None:
+        """站点空响应退避：3s → 6s → 12s（15s 封顶），可被停止信号打断。
+
+        比 429 的退避短：实测「换一次新导航」经常直接拿到数据，等太久反而拖长任务。
+        """
+        delay = min(15.0, 3.0 * (2 ** self._blocked_backoff_level))
+        self._blocked_backoff_level += 1
+        self.logger.info("等待 %.0f 秒后重试该账号（TikTok 未返回作品列表）", delay)
         self._interruptible_sleep(delay)
 
     @staticmethod

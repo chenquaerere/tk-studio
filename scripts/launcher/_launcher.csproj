@@ -35,9 +35,9 @@
     <Description>采集 · 去水印 · 高清修复，一站式素材工作台</Description>
     <Company>TK Studio</Company>
     <Copyright>Copyright © 2026 TK Studio</Copyright>
-    <Version>1.4.6</Version>
-    <AssemblyVersion>1.4.6.0</AssemblyVersion>
-    <FileVersion>1.4.6.0</FileVersion>
+    <Version>1.5.0</Version>
+    <AssemblyVersion>1.5.0.0</AssemblyVersion>
+    <FileVersion>1.5.0.0</FileVersion>
 
     <!-- 只编译 _launcher.cs，避免 SDK 默认把所有 .cs 都收进来 -->
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>

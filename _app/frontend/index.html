@@ -650,6 +650,9 @@
             <div class="row" id="tk-zip-row" style="display:none">
               <a class="btn btn-primary" id="tk-zip" data-ico="package" href="#" download>下载全部（ZIP）</a>
             </div>
+            <p class="muted mobile-tip" id="tk-tip">
+              手机端取素材：长按图片选「存储到照片」即可进相册；视频点「打开」后用播放器保存。
+            </p>
             <div class="gallery" id="tk-gallery"></div>
             <div class="filelist" id="tk-files"></div>
           </div>
@@ -777,6 +780,9 @@
               <span class="muted" id="lib-msg"></span>
             </div>
             <div class="muted" id="lib-roots"></div>
+            <p class="muted mobile-tip" id="lib-tip">
+              手机端取素材：长按图片选「存储到照片」即可进相册；视频点「打开」后用播放器保存。
+            </p>
             <div class="gallery" id="lib-gallery"></div>
             <div id="lib-table" class="table-wrap muted">点「刷新」加载</div>
           </div>
@@ -1043,19 +1049,34 @@
               <label class="field grow">更新源（自定义 api 地址，可留空）
                 <input type="text" id="cset-update-url" placeholder="留空则用 GitHub Releases" /></label>
             </div>
-            <div class="row">
+            <div class="row proxy-row">
               <label class="chk"><input type="checkbox" id="cset-proxy-on" /> 启用代理</label>
               <label class="field">类型
                 <select id="cset-proxy-type">
                   <option value="http">HTTP</option>
                   <option value="https">HTTPS</option>
                   <option value="socks5">SOCKS5</option>
+                  <option value="socks4">SOCKS4</option>
                 </select>
               </label>
               <label class="field">主机<input type="text" id="cset-proxy-host" placeholder="127.0.0.1" /></label>
-              <label class="field">端口<input type="text" id="cset-proxy-port" placeholder="11304" /></label>
-              <button class="btn btn-ghost" id="cset-proxy-test">测试连通</button>
+              <label class="field">端口<input type="text" id="cset-proxy-port" placeholder="例如 7890" /></label>
+              <label class="field">用户名<input type="text" id="cset-proxy-user" placeholder="代理账号，可留空" autocomplete="off" /></label>
+              <label class="field">密码<input type="password" id="cset-proxy-pass" placeholder="代理密码，可留空" autocomplete="new-password" /></label>
+            </div>
+            <div class="row">
+              <button class="btn btn-ghost" id="cset-proxy-detect" data-ico="search">自动检测本机代理</button>
+              <button class="btn btn-ghost" id="cset-proxy-paste" data-ico="import">粘贴完整地址</button>
+              <button class="btn btn-ghost" id="cset-proxy-test" data-ico="check">测试连通</button>
               <span class="muted" id="cset-proxy-msg"></span>
+            </div>
+            <div class="row hidden" id="cset-proxy-result">
+              <div class="proxy-list" id="cset-proxy-list"></div>
+            </div>
+            <div class="muted" style="margin-top:6px">
+              代理账号与密码以明文保存在本机 <span class="mono">config.json</span>，仅本机可读；
+              若代理软件就在这台电脑上，一般只需要填主机 <span class="mono">127.0.0.1</span>
+              与它显示的服务端口 ——「自动检测本机代理」可以直接帮你找到。
             </div>
             <div class="row">
               <button class="btn btn-primary" id="cset-save" data-ico="save">保存采集设置</button>
@@ -1127,6 +1148,36 @@
               <button class="btn btn-ghost" id="set-lan-info" data-ico="phone">显示手机访问地址</button>
             </div>
             <pre class="log" id="set-lan-addr">勾选后保存，然后<strong>重启程序</strong>生效。</pre>
+
+            <div class="row" style="margin-top:14px">
+              <label class="chk"><input type="checkbox" id="set-https" /> 启用 HTTPS（手机可一键「保存到相册」）</label>
+              <button class="btn btn-ghost" id="set-https-info" data-ico="key">查看证书状态</button>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <a class="btn btn-ghost" id="set-https-cert" href="/api/https/cert"
+                 data-ico="download" download>下载证书（手机安装用）</a>
+              <button class="btn btn-ghost" id="set-https-regen" data-ico="refresh">重新生成证书</button>
+            </div>
+            <pre class="log" id="set-https-addr">未启用：手机端的「保存到相册 / 分享」需要 HTTPS。</pre>
+            <p class="muted">
+              为什么需要它：手机端能一键存相册的 <strong>navigator.share</strong> 只在 HTTPS 下存在
+              —— 局域网的 http 地址上，浏览器干脆不提供这个 API（SecureContext 限制）。
+              这里用的是本机自签证书，手机首次要装一次：
+              ① 用 http 地址打开本页 → 点上方「下载证书」；
+              ② 设置 → 通用 → VPN与设备管理 → 安装；
+              ③ 设置 → 通用 → 关于本机 → 证书信任设置 → 打开该证书的「完全信任」；
+              ④ 之后改用 https 地址打开，素材大图上就会出现「保存到相册」按钮。
+            </p>
+            <p class="muted">
+              不装证书也完全可用：长按图片选「存储到照片」（iPhone）/「下载图像」（安卓）、
+              或点卡片上的「下载」都能存进相册，只是要一张一张来。
+            </p>
+            <p class="muted">
+              换了网络或换了网卡时程序会<strong>自动</strong>重签证书；
+              手动「重新生成」后需<strong>重启程序</strong>生效，
+              并且手机上要重新安装一次新证书。证书只用于本机内网地址，
+              私钥保存在程序目录 <strong>runtime\tls\</strong> 下，不会外传。
+            </p>
           </div>
 
           <div class="card">

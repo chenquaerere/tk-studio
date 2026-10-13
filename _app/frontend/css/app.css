@@ -810,6 +810,35 @@ td.time { color: var(--text-2); font-family: var(--mono); font-size: var(--fs-sm
 .grow { flex: 1 1 auto; min-width: 0; }
 .hidden { display: none !important; }
 
+/* ---------------------------------------------------------- 代理检测结果
+   2026-10-13：设置页「自动检测本机代理」的结果列表。整块默认隐藏（.hidden），
+   点过检测才出现。左侧 3px 竖条表示可用性 —— 绿=已验证能出网，灰=端口有监听
+   但转发不通（附可读原因）。刻意不用大面积彩色底，避免看起来像报错。 */
+.proxy-list {
+  display: flex; flex-direction: column; gap: 6px;
+  width: 100%;                       /* .row 是 flex，需要显式占满整行 */
+}
+.proxy-item {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 10px; border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: var(--r-sm); background: var(--surface-2); font-size: var(--fs-sm);
+}
+.proxy-item.is-ok { border-left-color: var(--success); }
+.proxy-item.is-bad { border-left-color: var(--border-strong); }
+.proxy-item .pi-addr { font-family: var(--mono); color: var(--text); }
+.proxy-item .pi-meta { color: var(--text-3); }
+.proxy-item .pi-err { color: var(--warning); }
+.proxy-item .pi-grow { flex: 1 1 160px; min-width: 0; }
+.proxy-empty { color: var(--text-3); font-size: var(--fs-sm); }
+
+/* 代理行有 6 个控件（启用代理 / 类型 / 主机 / 端口 / 用户名 / 密码），
+   按设置页默认的 218px 列宽只能排下 5 列 —— 第 6 个「密码」会掉到第二行
+   且左侧空一大片，看起来和「用户名」不像一对。这里只放宽这一行的列宽，
+   让它 6 列排满一行；窗口变窄时仍会自动折行。不动其它行。 */
+#page-settings .row.proxy-row {
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+}
+
 /* 可点整行（列表选择） */
 .pick-row { cursor: pointer; }
 .pick-row:hover { background: var(--surface-2); }
@@ -878,9 +907,14 @@ td.time { color: var(--text-2); font-family: var(--mono); font-size: var(--fs-sm
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
   gap: 10px; margin-top: 10px;
 }
-.gallery figure { margin: 0; }
+/* min-width: 0 是必须的：img/video 是 replaced element，其固有宽度
+   （用户素材动辄 1080px 以上）会成为 grid/flex item 的 min-content，
+   把 `1fr` 列撑到 500px+。手机上表现为「卡片被容器裁掉右半边」，
+   而文档宽度看着仍是 390px 所以极难察觉 —— 自合并以来一直潜伏，
+   2026-10-13 加手机端操作行时一并修掉。 */
+.gallery figure { margin: 0; display: flex; flex-direction: column; min-width: 0; }
 .gallery img {
-  width: 100%; aspect-ratio: 3 / 4; object-fit: cover;
+  width: 100%; min-width: 0; aspect-ratio: 3 / 4; object-fit: cover;
   border-radius: var(--r-sm); border: 1px solid var(--border);
   background: var(--surface-3); cursor: zoom-in;
   transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
@@ -890,11 +924,21 @@ td.time { color: var(--text-2); font-family: var(--mono); font-size: var(--fs-sm
   font-size: var(--fs-xs); color: var(--text-3);
   margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 卡片操作行（打开 / 下载）。手机端取素材的主入口。
+   放在图片「下方」而不是覆盖在图上 —— 覆盖会挡住 iOS 长按的命中区域，
+   而「长按图片 → 存储到照片」正是手机上最短的入相册路径。 */
+.gallery-actions { display: flex; gap: 6px; margin-top: 6px; }
+.gallery-actions .btn { flex: 1 1 0; }
+
+/* 手机端专属说明。桌面端取素材走的是右键/资源管理器，常显只会占地方。 */
+.mobile-tip { display: none; margin: 6px 0 0; }
+@media (max-width: 860px) { .mobile-tip { display: block; } }
+
 .video-thumb {
-  position: relative; border-radius: var(--r-sm); overflow: hidden;
+  min-width: 0; position: relative; border-radius: var(--r-sm); overflow: hidden;
   border: 1px solid var(--border); background: var(--video-bg);
 }
-.video-thumb video { width: 100%; display: block; aspect-ratio: 9 / 16; object-fit: cover; }
+.video-thumb video { width: 100%; min-width: 0; display: block; aspect-ratio: 9 / 16; object-fit: cover; }
 
 /* ---------------------------------------------------------- 文件清单 */
 .filelist { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
@@ -1024,7 +1068,25 @@ td.time { color: var(--text-2); font-family: var(--mono); font-size: var(--fs-sm
   display: flex; align-items: center; justify-content: center;
   padding: 24px; cursor: zoom-out;
 }
-.lightbox img { max-width: 94vw; max-height: 92vh; border-radius: var(--r-sm); }
+/* 图片上不再是 zoom-out：点图不关灯箱。手机上长按图片松手时会触发一次
+   click，若此时关闭，用户来不及在弹出菜单里选「存储到照片」。
+   现在只有点「图片以外的背景」才关闭。 */
+.lightbox img { max-width: 94vw; max-height: 92vh; border-radius: var(--r-sm); cursor: default; }
+.lightbox-tip {
+  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  font-size: var(--fs-sm); padding: 6px 14px; border-radius: var(--r-pill);
+  pointer-events: none; white-space: nowrap;
+}
+/* 灯箱底部操作条（v1.5.0「保存到相册」）。
+   只有 HTTPS（安全上下文）且浏览器支持 Web Share 时才会渲染这个容器 ——
+   非 localhost 的 http:// 源上 navigator.share 直接是 undefined，
+   所以这里不做「置灰禁用」，而是整块不出现（不给用户点了报错的按钮）。
+   bottom 留出比 .lightbox-tip 更高的位置，两者不重叠。 */
+.lightbox-actions {
+  position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%);
+  display: flex; gap: 8px; align-items: center;
+}
 
 /* ============================================================ 采集模块组件 */
 

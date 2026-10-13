@@ -1467,13 +1467,20 @@ def settings_values():
             # 重新打开页面又变回默认值，再点保存就把用户的选择覆盖掉）。
             # 放在末尾是为了不改动上面已有的配对顺序。
             bool(c.get("video_skip_similar", True)),
-            int(c.get("face_work_side", 4096) or 4096))
+            int(c.get("face_work_side", 4096) or 4096),
+            # v1.5.0：内置 HTTPS（手机「保存到相册 / 分享」的前提）
+            bool(c.get("https_enabled", False)))
 
 
 def settings_save(out_root, date_folder, face_enhance, tile, half,
                   encoder, crf, interpolate, skip, skipsim, keep,
-                  max_size, vidmax, beep, facework, lan_access):
-    """保存设置（v4.0.1：已移除局域网访问密码参数）。"""
+                  max_size, vidmax, beep, facework, lan_access,
+                  https_enabled=False):
+    """保存设置（v4.0.1：已移除局域网访问密码参数）。
+
+    ``https_enabled`` 带默认值：位置参数是既有的脆弱契约
+    （见 test_settings_roundtrip.py），末尾追加可避免影响老调用点。
+    """
     c = load()
     c["output_root"] = str(Path(str(out_root)).expanduser())
     c["date_folder"] = bool(date_folder)
@@ -1493,10 +1500,11 @@ def settings_save(out_root, date_folder, face_enhance, tile, half,
     c["video_max_side"] = int(vidmax or 0)
     c["beep_on_done"] = bool(beep)
     c["lan_access"] = bool(lan_access)
+    c["https_enabled"] = bool(https_enabled)
     # 密码字段已废弃，清空以免残留在配置里造成误解
     c.pop("lan_password", None)
     save(c)
-    return "设置已保存 ✓（局域网访问需重启程序生效）"
+    return "设置已保存 ✓（局域网访问 / HTTPS 需重启程序生效）"
 
 
 MODEL_TABLE_HEADERS = ["分类", "模型", "体积", "显存", "接入状态", "权重"]

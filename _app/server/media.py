@@ -23,6 +23,19 @@ def file_url(path: str) -> str:
     return "/api/file?path=" + quote(str(path), safe="")
 
 
+def preview_url(path: str) -> str:
+    """`/api/file` 的「浏览器内直接打开」变体（Content-Disposition: inline）。
+
+    为什么必须单独有一个（手机端取素材的关键，2026-10-13）：
+    `file_url()` 生成的 URL 带 `filename=` ⇒ 响应用
+    `Content-Disposition: attachment`，点开即下载 —— 桌面端正是想要的。
+    但 iOS Safari 只会把它落到「文件」App，而相册不在那条路径上，
+    用户根本没有「存储到照片」的机会。
+    改成 inline 后新标签直接渲染图片，长按即出「存储到照片」菜单。
+    """
+    return "/api/file?inline=1&path=" + quote(str(path), safe="")
+
+
 def classify(path: str | Path) -> str:
     """返回 image / video / other。"""
     suf = Path(path).suffix.lower()
@@ -58,6 +71,7 @@ def outputs_payload(paths) -> list[dict]:
                 out.append({
                     "path": path,
                     "url": p.get("url") or file_url(path),
+                    "preview_url": p.get("preview_url") or preview_url(path),
                     "name": p.get("name") or fp.name,
                     "kind": kind,
                     "is_image": kind == "image",
@@ -75,6 +89,7 @@ def outputs_payload(paths) -> list[dict]:
             out.append({
                 "path": key,
                 "url": file_url(key),
+                "preview_url": preview_url(key),
                 "name": fp.name,
                 "kind": kind,
                 "is_image": kind == "image",

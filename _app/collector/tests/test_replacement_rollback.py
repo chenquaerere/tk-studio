@@ -17,7 +17,7 @@ import tempfile
 import unittest
 
 from collector.collect.engine import CollectEngine
-from collector.collect.exceptions import LoginRequired
+from collector.collect.exceptions import LoginRequired, SiteBlocked
 from collector.core.date_resolver import DateResolver
 from collector.core.models import Account, ParsedVideoItem, Video
 from collector.db.database import Database
@@ -240,8 +240,9 @@ class TestEngineRollback(unittest.TestCase):
         i_back = loop.index("back = self.db.restore_videos(snapshot)")
         self.assertLess(i_abort, i_clear, "熔断检查必须在任何清除动作之前")
         self.assertLess(i_clear, i_back, "回滚分支必须在删除之后")
-        # 回滚只针对「失败且一条未采到」
-        self.assertIn('result.status == "failed" and result.actual_count == 0', loop)
+        # 回滚针对「失败/被中止且一条未采到」（v1.4.7 起 skipped 也回滚）
+        self.assertIn('result.status in ("failed", "skipped")', loop)
+        self.assertIn("and result.actual_count == 0", loop)
 
 
 class TestSummaryTextMentionsRollback(unittest.TestCase):
@@ -273,8 +274,9 @@ class TestSummaryTextMentionsRollback(unittest.TestCase):
 class TestDailyLinksNotTruncated(unittest.TestCase):
     """一次没采到链接的运行，不能把当日链接日志清空（v1.4.3）。
 
-    `DailyLinksLog.replace([])` 是 "w" 打开 —— 空列表＝清空文件。
+    旧实现 `DailyLinksLog.replace([])` 是 "w" 打开 —— 空列表＝清空文件。
     登录态失效 / 全部失败 / 刚开跑就被停止都会走这条路径。
+    v1.4.7 起引擎改用 `append_many`（全天累计），这里同时守住「没采到就一个字不写」。
     """
 
     def setUp(self):
@@ -304,15 +306,17 @@ class TestDailyLinksNotTruncated(unittest.TestCase):
         self.assertEqual(s["links_kept"], 2)
         self.assertEqual(s["links_written"], 0)
 
-    def test_successful_run_replaces_link_log(self):
+    def test_successful_run_appends_link_log(self):
+        """成功的一次采集追加到当日日志（v1.4.7 起累计），不覆盖既有内容。"""
         self.links.replace(["https://www.tiktok.com/@a/video/old"], day=TARGET)
         eng = self._engine(OkCollector({"demo_alpha": [
             _item("7700000000000000001", "demo_alpha")]}))
         s = eng.run([_acc("a1", "demo_alpha")], TARGET)
 
         urls = self.links.load(day=TARGET)
-        self.assertEqual(len(urls), 1)
-        self.assertIn("7700000000000000001", urls[0])
+        self.assertEqual(len(urls), 2, "旧链接必须保留，新链接追加在后")
+        self.assertEqual(urls[0], "https://www.tiktok.com/@a/video/old")
+        self.assertIn("7700000000000000001", urls[1])
         self.assertEqual(s["links_written"], 1)
         self.assertEqual(s["links_kept"], 0)
 
@@ -321,6 +325,91 @@ class TestDailyLinksNotTruncated(unittest.TestCase):
         s = eng.run([_acc("a1", "demo_alpha")], TARGET)
         self.assertEqual(self.links.load(day=TARGET), [])
         self.assertEqual(s["links_kept"], 0)
+
+
+class StopDuringCollect:
+    """采第二个账号时抛 SiteBlocked 并**立刻请求停止** —— 复现「采到一半按停止」。
+
+    时序与线上事故一致：主循环已经清掉该账号旧记录（留了快照）→ 第一次尝试
+    被 TikTok 拒绝 → 用户点了停止 → 重试前的 `_stopped()` 检查把状态判成 skipped。
+    """
+
+    def __init__(self, holder, stop_on, items_by_account=None):
+        self.holder = holder
+        self.stop_on = stop_on
+        self.items = items_by_account or {}
+        self.calls = []
+
+    def collect(self, account, on_item):
+        self.calls.append(account.username)
+        if account.username == self.stop_on:
+            eng = self.holder.get("eng")
+            if eng is not None:
+                eng.request_stop()
+            raise SiteBlocked("TikTok 未返回作品列表（空响应/页面报错）")
+        items = self.items.get(account.username, [])
+        for it in items:
+            if not on_item(it):
+                break
+        return {"found": len(items), "scrolls": 1, "item_list_requests": 1,
+                "create_times": []}
+
+
+class TestStoppedAccountRollsBack(unittest.TestCase):
+    """采到一半按「停止」也不能把已清空的旧记录丢掉（v1.4.7）。
+
+    2026-10-12 22:01 实测事故：用户采到一半停止，@user1986540439405 的旧记录
+    已被「先清后采」删除，而停止路径给的状态是 skipped —— 不在回滚条件里，
+    3 条记录被清空且没写回（事后从 10-12 10:34 的自动备份恢复）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self.tmp.name, "test.db"))
+        self.resolver = DateResolver("Asia/Shanghai")
+        self.holder = {}
+        # videos.first_task_id 有外键约束：历史记录所属任务必须先入库
+        self.db.insert_task("task-old", target_date="2026-09-20", status="completed")
+        for aid, uname in (("a1", "demo_alpha"), ("a2", "demo_beta")):
+            self.db.insert_account(_acc(aid, uname))
+            for i in range(3):
+                self.db.insert_video(_old_video(aid, uname, f"{aid}-v{i}"))
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def _engine(self, collector):
+        eng = CollectEngine(self.db, collector, self.resolver,
+                            max_retry=2, account_interval_seconds=0.0)
+        eng._interruptible_sleep = lambda seconds: None  # 测试里不真等退避
+        self.holder["eng"] = eng
+        return eng
+
+    def test_stopped_account_keeps_old_records(self):
+        col = StopDuringCollect(self.holder, "demo_beta",
+                                {"demo_alpha": [_item("9001", "demo_alpha")]})
+        eng = self._engine(col)
+        s = eng.run([_acc("a1", "demo_alpha"), _acc("a2", "demo_beta")], TARGET)
+
+        by = {r.username: r for r in s["accounts"]}
+        # a1 只采到 1 条（目标 4）→ partial；关键是它不受 a2 中止的影响
+        self.assertEqual(by["demo_alpha"].status, "partial")
+        self.assertEqual(by["demo_beta"].status, "skipped")
+        self.assertEqual(s["skipped"], 1, "被中止的账号要计入 skipped")
+        self.assertEqual(s["restored"], 3, "被中止的账号必须把旧记录回滚写回")
+        kept = sorted(r["video_id"] for r in self.db.snapshot_videos_for_account("a2"))
+        self.assertEqual(kept, ["a2-v0", "a2-v1", "a2-v2"], "3 条旧记录一条都不能少")
+        # 第一个账号成功采集 → 旧记录被新记录正常替换
+        got = [r["video_id"] for r in self.db.snapshot_videos_for_account("a1")]
+        self.assertEqual(got, ["9001"])
+
+    def test_stopped_account_error_reason_says_rolled_back(self):
+        col = StopDuringCollect(self.holder, "demo_beta")
+        eng = self._engine(col)
+        s = eng.run([_acc("a1", "demo_alpha"), _acc("a2", "demo_beta")], TARGET)
+        row = {r.username: r for r in s["accounts"]}["demo_beta"]
+        self.assertIn("回滚", row.error_reason or "")
 
 
 if __name__ == "__main__":

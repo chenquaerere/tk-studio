@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 # 路径一律从统一路径层取，禁止按 __file__ 数层数
 # （合并后模块层级已变化，手写 parents[N] 极易指错目录）。
 from common import paths as _paths
+from common import tls as _tls
 
 PROJECT_ROOT = _paths.APP_ROOT
 
@@ -44,6 +45,17 @@ PROJECT_ROOT = _paths.APP_ROOT
 def _load_cfg() -> dict:
     import watermark.core.config as _c
     return _c.load()
+
+
+def _runtime_json() -> dict:
+    """读程序启动时写的 runtime/server.json（端口、监听地址、HTTPS 状态）。"""
+    try:
+        f = PROJECT_ROOT / "runtime" / "server.json"
+        if f.exists():
+            return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
 
 
 
@@ -129,7 +141,8 @@ def get_settings():
     keys = ["output_root", "date_folder", "face_enhance", "tile", "half",
             "video_encoder", "video_crf", "interpolate", "skip_existing",
             "keep_frames", "max_output_size", "video_max_side", "beep_on_done",
-            "lan_access", "video_skip_similar", "face_work_side"]
+            "lan_access", "video_skip_similar", "face_work_side",
+            "https_enabled"]
     return {"values": dict(zip(keys, values)), "raw": _load_cfg()}
 
 
@@ -139,7 +152,8 @@ async def set_settings(payload: dict):
     # 参数顺序须与 services.settings_save 一致
     order = ["output_root", "date_folder", "face_enhance", "tile", "half",
              "encoder", "crf", "interpolate", "skip", "skipsim", "keep",
-             "max_size", "vidmax", "beep", "facework", "lan_access"]
+             "max_size", "vidmax", "beep", "facework", "lan_access",
+             "https_enabled"]
     src = payload or {}
     alias = {
         "output_root": "output_root", "date_folder": "date_folder",
@@ -150,6 +164,7 @@ async def set_settings(payload: dict):
         "max_size": "max_output_size", "vidmax": "video_max_side",
         "beep": "beep_on_done", "facework": "face_work_side",
         "lan_access": "lan_access",
+        "https_enabled": "https_enabled",
     }
     cur = _load_cfg()
     args = []
@@ -1014,15 +1029,10 @@ def lan_info():
     enabled = bool(cfg.get("lan_access", False))
     port = 0
     host = ""
-    try:
-        import json as _json
-        f = PROJECT_ROOT / "runtime" / "server.json"
-        if f.exists():
-            d = _json.loads(f.read_text(encoding="utf-8"))
-            port = int(d.get("port") or 0)
-            host = str(d.get("host") or "")
-    except Exception:
-        pass
+    rt = _runtime_json()
+    if rt:
+        port = int(rt.get("port") or 0)
+        host = str(rt.get("host") or "")
     ip = ""
     try:
         s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
@@ -1033,6 +1043,7 @@ def lan_info():
             s.close()
     except Exception:
         pass
+    https_port = int(rt.get("https_port") or 0)
     return {
         "enabled": enabled,
         "listening_lan": host == "0.0.0.0",
@@ -1040,10 +1051,121 @@ def lan_info():
         "port": port,
         "ip": ip,
         "url": f"http://{ip}:{port}/" if (ip and port) else "",
+        # v1.5.0：HTTPS 是否正在监听（手机「保存到相册」需要它）
+        "https_enabled": bool(rt.get("https_enabled")),
+        "https_port": https_port,
+        "https_url": f"https://{ip}:{https_port}/" if (ip and https_port) else "",
         "note": ("已开启：手机连同一个 WiFi 后打开上面的地址即可使用，无需登录。"
                  if enabled else
                  "未开启：当前只允许本机访问。勾选「允许局域网访问」保存后重启生效。"),
     }
+
+
+# ------------------------------------------------------- HTTPS（v1.5.0）
+
+def _https_state() -> dict:
+    """HTTPS 的「配置想要什么」与「进程实际提供了什么」两套状态。
+
+    分开返回是刻意的：开关改完必须重启才生效，界面要能如实显示
+    「已勾选但还没生效」，否则用户会以为点一下就好了。
+    """
+    rt = _runtime_json()
+    desired = bool(_load_cfg().get("https_enabled", False))
+    running = bool(rt.get("https_enabled"))
+    port = int(rt.get("https_port") or 0)
+    st = _tls.cert_info()
+    ip = st.get("lan_ip") or ""
+    http_port = int(rt.get("port") or 0)
+    return {
+        "desired": desired,
+        "running": running,
+        "need_restart": desired != running,
+        "port": port,
+        "http_port": http_port,
+        "ip": ip,
+        "local_ips": st.get("local_ips") or [],
+        "http_url": f"http://{ip}:{http_port}/" if (ip and http_port) else "",
+        "https_url": f"https://{ip}:{port}/" if (ip and port) else "",
+        "lan_access": bool(_load_cfg().get("lan_access", False)),
+        "cert": {
+            "exists": st.get("exists"),
+            "ok": st.get("ok"),
+            "reason": st.get("reason"),
+            "fingerprint_short": st.get("fingerprint_short", ""),
+            "fingerprint_sha256": st.get("fingerprint_sha256", ""),
+            "not_before": st.get("not_before", ""),
+            "not_after": st.get("not_after", ""),
+            "days_left": st.get("days_left", 0),
+            "key_bits": st.get("key_bits", 0),
+            "hosts": st.get("hosts") or [],
+            "ip_covered": st.get("ip_covered"),
+            "missed_ips": st.get("missed_ips") or [],
+            "missing": not bool(st.get("exists")),
+        },
+        "download_url": "/api/https/cert",
+    }
+
+
+@app.get("/api/https-info")
+def https_info():
+    """HTTPS 状态（只读，不产生任何副作用）。"""
+    return _https_state()
+
+
+@app.post("/api/https-settings")
+def https_settings(payload: dict):
+    """开关 HTTPS。
+
+    ⚠️ 与设置页其它项一样**写配置、重启生效** —— 正在跑的 uvicorn 不会
+    因为改配置就换监听方式。返回值里带 ``need_restart`` 供界面提示。
+    """
+    src = payload or {}
+    if "enabled" not in src:
+        # 铁律 6：写操作不允许「参数缺省就按某个默认值写下去」
+        raise HTTPException(400, "缺少 enabled 参数")
+    enabled = bool(src.get("enabled"))
+    import common.config as _cc
+    _cc.update("watermark", {"https_enabled": enabled})
+    st = _https_state()
+    st["message"] = ("已开启 HTTPS（保存后重启程序生效）"
+                     if enabled else "已关闭 HTTPS（重启程序生效）")
+    return st
+
+
+@app.post("/api/https/regenerate")
+def https_regenerate():
+    """重新签发自签证书。
+
+    什么时候要用：换了网络 / 换了网卡导致局域网 IP 变了、证书快过期、
+    或者证书文件被替换过。**重启才生效**，且手机需要重新安装新证书
+    （旧证书在新证书生效后就对不上了）。
+    """
+    try:
+        _tls.generate()
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"重新生成证书失败: {exc}")
+        raise HTTPException(500, f"生成证书失败：{exc}") from exc
+    st = _https_state()
+    st["message"] = "证书已重新生成 —— 重启程序生效，手机需重新安装一次证书"
+    return st
+
+
+@app.get("/api/https/cert")
+def https_cert():
+    """下载证书（.crt），供手机安装。
+
+    走 HTTP 也能下 —— 手机安装证书本来就是「先装后用」的顺序，
+    所以这个端点不要求当前连接已是 HTTPS。
+    """
+    cert = _tls.CERT_PATH
+    if not cert.is_file():
+        raise HTTPException(404, "还没有证书：请先在设置里勾选「启用 HTTPS」并重启程序")
+    return FileResponse(
+        str(cert),
+        media_type="application/x-x509-ca-cert",
+        filename="TK素材工坊.crt",
+        content_disposition_type="attachment",
+    )
 
 
 @app.get("/api/output-dir")
@@ -1158,15 +1280,21 @@ def _is_allowed(p: Path) -> bool:
 
 
 @app.get("/api/file")
-def get_file(path: str):
-    """受控地提供结果文件（图片/视频/ZIP）给前端显示或下载。"""
+def get_file(path: str, inline: int = 0):
+    """受控地提供结果文件（图片/视频/ZIP）给前端显示或下载。
+
+    `inline=1` 时用 `Content-Disposition: inline`：浏览器内直接渲染，
+    供手机端「打开原图 → 长按 → 存储到照片」使用（详见 media.preview_url）。
+    默认仍是 attachment（桌面端「打开」= 下载），行为不变。
+    """
     p = Path(path)
     if not p.is_file():
         raise HTTPException(404, "文件不存在")
     if not _is_allowed(p):
         raise HTTPException(403, "路径不在允许范围内")
     mime = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-    return FileResponse(str(p), media_type=mime, filename=p.name)
+    return FileResponse(str(p), media_type=mime, filename=p.name,
+                        content_disposition_type="inline" if inline else "attachment")
 
 
 def file_url(path: str) -> str:

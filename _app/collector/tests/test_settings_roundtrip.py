@@ -13,7 +13,8 @@ from pathlib import Path
 # settings_save 的位置参数顺序（与 server/api.py 的 order 数组一致）
 SAVE_ORDER = ["out_root", "date_folder", "face_enhance", "tile", "half",
               "encoder", "crf", "interpolate", "skip", "skipsim", "keep",
-              "max_size", "vidmax", "beep", "facework", "lan_access"]
+              "max_size", "vidmax", "beep", "facework", "lan_access",
+              "https_enabled"]
 
 BASE_CFG = {
     "output_root": "D:/tk-out", "date_folder": True, "face_enhance": False,
@@ -21,6 +22,7 @@ BASE_CFG = {
     "interpolate": False, "skip_existing": True, "keep_frames": False,
     "max_output_size": 4096, "video_max_side": 1920, "beep_on_done": True,
     "lan_access": False, "video_skip_similar": True, "face_work_side": 4096,
+    "https_enabled": False,
 }
 
 
@@ -61,6 +63,7 @@ class TestWatermarkSettingsRoundTrip(unittest.TestCase):
             "max_size": "max_output_size", "vidmax": "video_max_side",
             "beep": "beep_on_done", "facework": "face_work_side",
             "lan_access": "lan_access",
+            "https_enabled": "https_enabled",
         }
         for name in SAVE_ORDER:
             positional.append(changes.get(name, current.get(key_by_name[name])))
@@ -94,7 +97,7 @@ class TestWatermarkSettingsRoundTrip(unittest.TestCase):
             out_root="D:/tk-out-2", date_folder=False, face_enhance=True,
             tile=2, half=True, encoder="libx264", crf=23, interpolate=True,
             skip=False, skipsim=False, keep=True, max_size=1024, vidmax=720,
-            beep=False, facework=2048, lan_access=True)
+            beep=False, facework=2048, lan_access=True, https_enabled=True)
         reported = self._reported()
         expected = {
             "output_root": str(Path("D:/tk-out-2")),
@@ -104,6 +107,7 @@ class TestWatermarkSettingsRoundTrip(unittest.TestCase):
             "max_output_size": 1024, "video_max_side": 720,
             "beep_on_done": False, "lan_access": True,
             "video_skip_similar": False, "face_work_side": 2048,
+            "https_enabled": True,
         }
         self.assertEqual(sorted(reported), sorted(expected))
         for key, want in expected.items():

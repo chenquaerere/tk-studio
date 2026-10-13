@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from common import config as _uc
+from common import proxy as _proxy
 
 DEFAULTS: Dict[str, Any] = _uc.DEFAULTS["collector"]
 
@@ -59,17 +60,19 @@ class Config:
     def proxy_config(self) -> Optional[Dict[str, Any]]:
         """返回 Playwright 格式的代理配置；未启用/未配置返回 None。
 
-        代理由用户配置（proxy_enabled/proxy_type/proxy_host/proxy_port），
-        本方法不硬编码任何地址 —— 与旧实现语义完全一致。
+        代理由用户配置（proxy_enabled/proxy_type/proxy_host/proxy_port，
+        以及 2026-10-13 新增的 proxy_username/proxy_password）。
+        拼接逻辑统一走 `common.proxy.build()` —— 它同时容忍用户把
+        `http://host:port` 整串填进「主机」框这类写法。
+
+        安全：返回值**含密码**，只允许交给 Playwright。要写日志/回前端
+        请先过 `common.proxy.display()`。本方法不硬编码任何地址。
         """
         if not self.get("proxy_enabled"):
             return None
-        host = str(self.get("proxy_host") or "").strip()
-        port = str(self.get("proxy_port") or "").strip()
-        if not host or not port:
-            return None
-        ptype = str(self.get("proxy_type") or "http").strip().lower()
-        return {"server": f"{ptype}://{host}:{port}"}
+        return _proxy.build(self.get("proxy_type"),
+                            self.get("proxy_host"), self.get("proxy_port"),
+                            self.get("proxy_username"), self.get("proxy_password"))
 
     @staticmethod
     def resolve_proxy(cfg) -> Optional[Dict[str, Any]]:
@@ -84,10 +87,7 @@ class Config:
         if isinstance(cfg, dict):
             if not cfg.get("proxy_enabled"):
                 return None
-            host = str(cfg.get("proxy_host") or "").strip()
-            port = str(cfg.get("proxy_port") or "").strip()
-            if not host or not port:
-                return None
-            ptype = str(cfg.get("proxy_type") or "http").strip().lower()
-            return {"server": f"{ptype}://{host}:{port}"}
+            return _proxy.build(cfg.get("proxy_type"),
+                                cfg.get("proxy_host"), cfg.get("proxy_port"),
+                                cfg.get("proxy_username"), cfg.get("proxy_password"))
         return None

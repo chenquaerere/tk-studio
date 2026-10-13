@@ -599,6 +599,47 @@
       .map((o) => o.path);
   }
 
+  // 单个画廊卡片：图片/视频 + 名称 + 操作行（打开 / 下载）。
+  // 手机端取素材的最短路径是「长按图片 → 存储到照片」，为此做了三件事：
+  //  1) <img src> 直接指向原图 —— 后端 /api/file 返回的就是原文件，
+  //     没有缩略图服务，所以长按存下来的是原图而不是小图；
+  //  2) 不在图片上禁 user-select / -webkit-touch-callout，保住 iOS 长按菜单；
+  //  3) 「打开」走 preview_url（Content-Disposition: inline）—— 若用 url
+  //     （attachment），iOS 会直接下载进「文件」App，相册不在那条路径上。
+  function galleryFigure(f) {
+    const fig = el("figure");
+    if (f.is_video) {
+      const wrap = el("div", "video-thumb");
+      const v = el("video");
+      v.src = f.url; v.controls = true; v.preload = "metadata";
+      wrap.appendChild(v);
+      fig.appendChild(wrap);
+    } else {
+      const img = el("img");
+      img.src = f.url; img.loading = "lazy"; img.alt = f.name; img.title = f.name;
+      img.addEventListener("click", () => openLightbox(f));
+      fig.appendChild(img);
+    }
+    fig.appendChild(el("figcaption", null, f.name));
+
+    const bar = el("div", "gallery-actions");
+    const open = el("a", "btn btn-ghost btn-sm", "打开");
+    open.href = f.preview_url || f.url;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.dataset.ico = "window";
+    open.title = "在新标签打开原图（手机上可长按保存到相册）";
+    const dl = el("a", "btn btn-ghost btn-sm", "下载");
+    dl.href = f.url;
+    dl.download = f.name || "";
+    dl.dataset.ico = "download";
+    dl.title = "下载到本机（安卓下载后会自动进相册）";
+    bar.appendChild(open);
+    bar.appendChild(dl);
+    fig.appendChild(bar);
+    return fig;
+  }
+
   function renderOutputs(galleryId, filesId, outputs, opts = {}) {
     const gal = $(galleryId);
     const list = $(filesId);
@@ -608,24 +649,7 @@
     if (!items.length) return;
 
     items.forEach((f) => {
-      if (gal && f.is_image) {
-        const fig = el("figure");
-        const img = el("img");
-        img.src = f.url; img.loading = "lazy"; img.alt = f.name; img.title = f.name;
-        img.addEventListener("click", () => openLightbox(f.url));
-        fig.appendChild(img);
-        fig.appendChild(el("figcaption", null, f.name));
-        gal.appendChild(fig);
-      } else if (gal && f.is_video) {
-        const fig = el("figure");
-        const wrap = el("div", "video-thumb");
-        const v = el("video");
-        v.src = f.url; v.controls = true; v.preload = "metadata";
-        wrap.appendChild(v);
-        fig.appendChild(wrap);
-        fig.appendChild(el("figcaption", null, f.name));
-        gal.appendChild(fig);
-      }
+      if (gal && (f.is_image || f.is_video)) gal.appendChild(galleryFigure(f));
       if (list) {
         const row = el("div", "file-row");
         row.appendChild(el("span", "fname", f.name));
@@ -638,12 +662,85 @@
     });
   }
 
-  function openLightbox(url) {
+  // 「保存到相册」只有在**安全上下文**里才可能存在。
+  // Web Share API（navigator.share / canShare）带 [SecureContext] 标记：
+  // 非 localhost 的 http:// 源上 navigator.share 直接是 undefined ——
+  // 手机访问本程序用的正是 http://192.168.x.x:端口，所以必须先开 HTTPS。
+  // 这里做特性检测而不是 UA 判断：不支持就整块不渲染，绝不出现
+  // 「点了没反应 / 报错」的按钮。
+  function canShareFiles() {
+    if (!window.isSecureContext) return false;
+    if (typeof navigator === "undefined") return false;
+    // 只给触屏设备（手机 / 平板）：桌面端本来就有「下载」，
+    // 而 Windows 上 Chrome 也实现了 navigator.share —— 不限制的话
+    // 桌面 WebView2 里会多出一个点了弹 Windows 分享面板、
+    // 却并不能「存进相册」的按钮。桌面界面保持原样不动。
+    const touch = (navigator.maxTouchPoints || 0) > 0;
+    if (!touch) return false;
+    if (typeof navigator.share !== "function"
+        || typeof navigator.canShare !== "function") return false;
+    try {
+      const probe = new File([new Blob([])], "t.jpg", { type: "image/jpeg" });
+      return navigator.canShare({ files: [probe] });
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 先取回原文件再交给系统分享面板（navigator.share 不能直接分享 URL）。
+  // 失败时兜底：把原图开在新标签，提示长按保存 —— 至少不会卡死。
+  async function saveToAlbum(f, btn) {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "准备中…";
+    try {
+      const resp = await fetch(f.url || f.preview_url);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const blob = await resp.blob();
+      const type = blob.type || (f.is_video ? "video/mp4" : "image/jpeg");
+      const file = new File([blob], f.name || "素材", { type });
+      await navigator.share({ files: [file], title: f.name || "素材" });
+      toast("已交给系统保存 / 分享面板");
+    } catch (err) {
+      // 用户自己取消不算失败，不要弹提示吓人
+      if (!err || err.name !== "AbortError") {
+        toast("一键保存没成功，已为你打开原图 —— 长按图片选「存储到照片」");
+        window.open(f.preview_url || f.url, "_blank", "noopener");
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  function openLightbox(f) {
+    const url = typeof f === "string" ? f : (f.preview_url || f.url);
     const box = el("div", "lightbox");
     const img = el("img");
     img.src = url;
+    if (typeof f !== "string" && f.name) img.alt = f.name;
+    // 只有点「图片以外的背景」才关闭。之前是整个灯箱任意点击都关 ——
+    // 手机上长按图片松手时的 click 会把灯箱一起关掉，
+    // 用户根本来不及在弹出菜单里选「存储到照片」。
+    box.addEventListener("click", (ev) => { if (ev.target === box) box.remove(); });
+    const tip = el("div", "lightbox-tip", "长按图片可「存储到照片」");
     box.appendChild(img);
-    box.addEventListener("click", () => box.remove());
+    let shareable = false;
+    if (typeof f !== "string") {
+      shareable = canShareFiles();
+      if (shareable) {
+        const bar = el("div", "lightbox-actions");
+        const save = el("button", "btn btn-primary btn-sm", "保存到相册");
+        save.dataset.ico = "save";
+        save.type = "button";
+        save.title = "调用系统保存/分享面板，可直接存进相册或分享到抖音、微信";
+        save.addEventListener("click", () => saveToAlbum(f, save));
+        bar.appendChild(save);
+        box.appendChild(bar);
+        tip.textContent = "也可以长按图片选「存储到照片」";
+      }
+    }
+    box.appendChild(tip);
     document.body.appendChild(box);
   }
 
@@ -1279,26 +1376,8 @@
         ["类型", "名称", "大小", "修改时间", "路径"], r.rows || []);
       const gal = $("lib-gallery");
       gal.innerHTML = "";
-      (r.items || []).forEach((f) => {
-        if (f.is_video) {
-          const fig = el("figure");
-          const wrap = el("div", "video-thumb");
-          const v = el("video");
-          v.src = f.url; v.controls = true; v.preload = "metadata";
-          wrap.appendChild(v);
-          fig.appendChild(wrap);
-          fig.appendChild(el("figcaption", null, f.name));
-          gal.appendChild(fig);
-        } else {
-          const fig = el("figure");
-          const img = el("img");
-          img.src = f.url; img.loading = "lazy"; img.alt = f.name;
-          img.addEventListener("click", () => openLightbox(f.url));
-          fig.appendChild(img);
-          fig.appendChild(el("figcaption", null, f.name));
-          gal.appendChild(fig);
-        }
-      });
+      // 与结果区共用同一个卡片渲染（图片/视频 + 名称 + 打开/下载操作行）
+      (r.items || []).forEach((f) => gal.appendChild(galleryFigure(f)));
       $("lib-msg").textContent = `共 ${(r.rows || []).length} 项`;
       const roots = await api("/api/library/roots");
       $("lib-roots").textContent = "扫描目录：" + (roots.roots || []).join("　");
@@ -1366,7 +1445,9 @@
       $("set-maxsize").value = v.max_output_size ?? 4096;
       $("set-vidmax").value = v.video_max_side ?? 1920;
       $("set-lan").checked = !!v.lan_access;
+      $("set-https").checked = !!v.https_enabled;
       loadLanInfo();
+      loadHttpsInfo();
     } catch (e) { $("set-msg").textContent = "读取设置失败：" + e.message; }
   }
 
@@ -1389,6 +1470,60 @@
 
   $("set-lan-info").addEventListener("click", loadLanInfo);
 
+  // ---- HTTPS（v1.5.0）----
+  // 状态分「配置想要什么」与「进程实际提供了什么」：开关改完要重启才生效，
+  // 界面必须如实显示这层差别，否则用户会以为勾一下就通了。
+  async function loadHttpsInfo() {
+    const box = $("set-https-addr");
+    try {
+      const r = await api("/api/https-info");
+      const cert = r.cert || {};
+      const lines = [];
+      if (r.running) {
+        lines.push(`HTTPS 已生效：${r.https_url || "（未识别到局域网 IP）"}`);
+      } else if (r.desired) {
+        lines.push("已勾选但尚未生效 —— 重启程序后开始监听 HTTPS。");
+      } else {
+        lines.push("未启用：手机端的一键「保存到相册 / 分享」需要 HTTPS。");
+      }
+      if (cert.exists) {
+        lines.push(`证书：${cert.fingerprint_short || "?"}　`
+          + `有效期至 ${cert.not_after || "?"}（还剩 ${cert.days_left} 天）`);
+        lines.push(cert.ok ? `状态：${cert.reason}`
+          : `⚠ ${cert.reason}`);
+      } else {
+        lines.push(`证书：${cert.reason}`);
+      }
+      if (r.desired && !r.lan_access) {
+        lines.push("⚠ 还没开「允许局域网访问」—— 手机连不上，请一并勾选。");
+      }
+      lines.push(`安装地址（手机用 http 打开即可下载证书）：${r.http_url || "（未识别到局域网 IP）"}`);
+      lines.push(`装好证书后改用：${r.https_url || "（重启后显示）"}`);
+      box.textContent = lines.join("\n");
+    } catch (e) {
+      box.textContent = "读取 HTTPS 状态失败：" + e.message;
+    }
+  }
+
+  $("set-https-info").addEventListener("click", loadHttpsInfo);
+  // 「下载证书」是普通链接（href 指向 /api/https/cert），不拦点击 ——
+  // 手机上由系统处理「下载描述文件」的流程，比 window.open 可靠。
+  $("set-https-regen").addEventListener("click", () => {
+    // 全工程禁原生二次确认框与提示框（verify_w4 门禁），走 collector.js 的
+    // 同一套内联二次确认：隐藏原按钮 + 原位插确认条。
+    const btn = $("set-https-regen");
+    const run = async () => {
+      try {
+        const r = await api("/api/https/regenerate", { method: "POST" });
+        toast(r.message || "证书已重新生成");
+        loadHttpsInfo();
+      } catch (e) { toast("生成失败：" + e.message); }
+    };
+    const ic = window.TKCollector && window.TKCollector.inlineConfirm;
+    if (ic) ic(btn, run, "重新生成证书？");
+    else run();
+  });
+
   $("set-save").addEventListener("click", async () => {
     try {
       const r = await api("/api/settings", {
@@ -1410,11 +1545,13 @@
           max_output_size: Number($("set-maxsize").value || 4096),
           video_max_side: Number($("set-vidmax").value || 1920),
           lan_access: $("set-lan").checked,
+          https_enabled: $("set-https").checked,
         },
       });
       $("set-msg").textContent = r.message || "已保存";
       toast("设置已保存");
       loadLanInfo();
+      loadHttpsInfo();
     } catch (e) { $("set-msg").textContent = "保存失败：" + e.message; }
   });
 

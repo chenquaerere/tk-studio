@@ -27,6 +27,8 @@
     "proxy_type": "http",
     "proxy_host": "",
     "proxy_port": "",
+    "proxy_username": "",
+    "proxy_password": "",
     "chat_last_count": 22
   },
   "watermark": {
@@ -35,7 +37,8 @@
     "skip_existing": true,
     "keep_frames": false,
     "beep_on_done": true,
-    "lan_access": false
+    "lan_access": false,
+    "https_enabled": false
   },
   "hd": {
     "face_enhance": false,
